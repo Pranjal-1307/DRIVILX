@@ -23,6 +23,8 @@ import {
     useAuth
 } from "../../context/AuthContext";
 
+import AuthCarHero from "../../components/common/AuthCarHero";
+
 
 const Login = () => {
 
@@ -224,177 +226,64 @@ const Login = () => {
 
 
                 {/* Content */}
-
-                <div className="relative z-10 w-full p-14 flex flex-col justify-between">
-
+                <div className="relative z-10 w-full p-6 xl:p-8 2xl:p-10 flex flex-col justify-between">
 
                     {/* Logo */}
-
                     <div className="animate-fade-right">
-
                         <div className="flex items-center gap-3">
-
-                            <div className="w-12 h-12 rounded-2xl bg-yellow-400 flex items-center justify-center shadow-[0_0_35px_rgba(250,204,21,0.25)]">
-
+                            <div className="w-11 h-11 rounded-2xl bg-yellow-400 flex items-center justify-center shadow-[0_0_35px_rgba(250,204,21,0.35)]">
                                 <Car
-                                    size={27}
-                                    className="text-black drivix-car"
+                                    size={25}
+                                    className="text-black"
                                 />
-
                             </div>
-
-                            <span className="text-3xl font-black text-white">
+                            <span className="text-2xl xl:text-3xl font-black text-white tracking-tight">
                                 Drivix
                             </span>
-
                         </div>
-
                     </div>
 
-
-                    {/* Main */}
-
-                    <div className="max-w-2xl">
-
-
-                        <div
-                            className="animate-fade-right"
-                            style={{
-                                animationDelay:
-                                    "0.15s",
-                                opacity: 0
-                            }}
-                        >
-
-                            <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-yellow-400/20 bg-yellow-400/5 text-yellow-300 text-sm">
-
-                                <Sparkles size={15} />
-
-                                The smarter way to travel
-
+                    {/* Middle Section: Hero Text & Dynamic Car Animation */}
+                    <div className="w-full my-auto py-1">
+                        <div className="animate-fade-right">
+                            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-yellow-400/25 bg-yellow-400/10 text-yellow-300 text-[11px] font-semibold tracking-wide">
+                                <Sparkles size={13} className="text-yellow-400" />
+                                <span>THE SMARTER WAY TO COMMUTE</span>
                             </div>
-
                         </div>
 
-
-                        <h1
-                            className="text-6xl xl:text-7xl font-black text-white leading-[1.02] mt-7 animate-fade-right"
-                            style={{
-                                animationDelay:
-                                    "0.25s",
-                                opacity: 0
-                            }}
-                        >
-
-                            Your car.
-                            <br />
-
-                            <span className="text-yellow-400">
+                        <h1 className="text-4xl xl:text-5xl font-black text-white leading-[1.05] mt-3 animate-fade-right">
+                            Your car.{" "}
+                            <span className="text-transparent bg-clip-text bg-gradient-to-r from-yellow-300 via-yellow-400 to-amber-500">
                                 Our driver.
                             </span>
-
                         </h1>
 
-
-                        <p
-                            className="text-gray-400 text-lg max-w-xl leading-relaxed mt-7 animate-fade-right"
-                            style={{
-                                animationDelay:
-                                    "0.4s",
-                                opacity: 0
-                            }}
-                        >
-
-                            Experience convenient,
-                            reliable and professional
-                            driver services designed
-                            around your journey.
-
+                        <p className="text-gray-400 text-xs xl:text-sm max-w-lg leading-relaxed mt-2 mb-3 animate-fade-right">
+                            Professional, verified on-demand chauffeurs for your personal vehicle. Track your chauffeur in real time with guaranteed safety.
                         </p>
 
-
-                        {/* Stats */}
-
-                        <div
-                            className="flex gap-10 mt-10 animate-fade-up"
-                            style={{
-                                animationDelay:
-                                    "0.55s",
-                                opacity: 0
-                            }}
-                        >
-
-                            <div>
-
-                                <p className="text-3xl font-black text-white">
-                                    24/7
-                                </p>
-
-                                <p className="text-gray-500 text-sm mt-1">
-                                    Availability
-                                </p>
-
-                            </div>
-
-
-                            <div>
-
-                                <p className="text-3xl font-black text-white">
-                                    100%
-                                </p>
-
-                                <p className="text-gray-500 text-sm mt-1">
-                                    Verified
-                                </p>
-
-                            </div>
-
-
-                            <div>
-
-                                <p className="text-3xl font-black text-white">
-                                    1
-                                </p>
-
-                                <p className="text-gray-500 text-sm mt-1">
-                                    Simple platform
-                                </p>
-
-                            </div>
-
+                        {/* Animated Night Highway & Luxury Car Feature */}
+                        <div className="animate-scale">
+                            <AuthCarHero />
                         </div>
-
                     </div>
 
-
-                    {/* Bottom */}
-
-                    <div>
-
-                        <div className="flex items-center gap-2 text-gray-500 text-sm">
-
-                            <ShieldCheck
-                                size={16}
-                                className="text-yellow-400"
-                            />
-
-                            Secure & trusted authentication
-
+                    {/* Bottom Stats & Trust */}
+                    <div className="pt-2 border-t border-white/5 animate-fade-up">
+                        <div className="flex items-center justify-between text-xs text-gray-400">
+                            <div className="flex items-center gap-2">
+                                <ShieldCheck
+                                    size={16}
+                                    className="text-yellow-400"
+                                />
+                                <span>256-bit encrypted authentication • Verified Drivers</span>
+                            </div>
+                            <span className="text-gray-500 hidden xl:inline text-[11px]">
+                                Drivix Mobility Network
+                            </span>
                         </div>
-
                     </div>
-
-                </div>
-
-
-                {/* Road animation */}
-
-                <div className="drivix-road">
-
-                    <div className="drivix-road-line" />
-                    <div className="drivix-road-line" />
-                    <div className="drivix-road-line" />
-                    <div className="drivix-road-line" />
 
                 </div>
 

@@ -247,9 +247,7 @@ const Signup = () => {
                         <h1
                             className="text-6xl xl:text-7xl font-black text-white leading-[1.02] mt-7 animate-fade-right"
                             style={{
-                                animationDelay:
-                                    "0.15s",
-                                opacity: 0
+                                animationDelay: "0.15s"
                             }}
                         >
 
@@ -266,9 +264,7 @@ const Signup = () => {
                         <p
                             className="text-gray-400 text-lg max-w-xl leading-relaxed mt-7 animate-fade-right"
                             style={{
-                                animationDelay:
-                                    "0.3s",
-                                opacity: 0
+                                animationDelay: "0.3s"
                             }}
                         >
 
