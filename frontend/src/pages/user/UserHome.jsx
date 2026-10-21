@@ -130,12 +130,6 @@ const UserHome = () => {
         fetchNotificationsCount();
     };
 
-    // Handle trip status progression
-    const handleTripStatusUpdate = (newStatus) => {
-        fetchDashboardData();
-        fetchNotificationsCount();
-    };
-
     return (
         <div className="drivix-dashboard user-dashboard min-h-screen bg-[#070709] text-white">
             <Navbar />
@@ -189,7 +183,6 @@ const UserHome = () => {
                 {activeTrip && (
                     <ActiveTripCard
                         booking={activeTrip}
-                        onStatusUpdate={handleTripStatusUpdate}
                         onPayRemainingClick={(b) => setPayRemainingBooking(b)}
                         onReviewClick={(b) => setReviewBooking(b)}
                     />

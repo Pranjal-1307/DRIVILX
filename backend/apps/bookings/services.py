@@ -1,5 +1,6 @@
 import math
 import random
+import secrets
 from datetime import datetime
 from bson import ObjectId
 from database.mongodb import drivers_collection, notifications_collection
@@ -18,6 +19,15 @@ VEHICLE_MULTIPLIERS = {
     "SUV": 1.35,
     "Luxury": 1.75
 }
+
+
+def generate_start_otp():
+    """Create a six-digit booking-specific trip start code."""
+    return f"{secrets.randbelow(1_000_000):06d}"
+
+
+def is_usable_start_otp(value):
+    return isinstance(value, str) and len(value) == 6 and value.isdigit()
 
 
 def calculate_estimated_fare(pickup, destination, trip_type="city_ride", vehicle_type="Sedan", distance_km=None, duration_mins=None):

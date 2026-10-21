@@ -48,6 +48,10 @@ const DriverActiveTripModal = ({ isOpen, onClose, onTripStatusChanged }) => {
 
     const handleUpdateStatus = async (nextStatus) => {
         if (!trip) return;
+        if (nextStatus === "in_progress" && !/^\d{6}$/.test(otpInput.trim())) {
+            setErrorMsg("Enter the six-digit OTP shared by the passenger.");
+            return;
+        }
         setUpdating(true);
         setErrorMsg("");
         setStatusMsg("");
@@ -56,7 +60,8 @@ const DriverActiveTripModal = ({ isOpen, onClose, onTripStatusChanged }) => {
             const res = await driverService.updateTripStatus(trip.id, nextStatus, otpInput);
             if (res.success) {
                 setStatusMsg(res.message || `Trip status updated to ${nextStatus}`);
-                setTrip(prev => ({ ...prev, status: nextStatus }));
+                setTrip(prev => ({ ...prev, status: res.status || nextStatus }));
+                if (nextStatus === "in_progress") setOtpInput("");
                 if (onTripStatusChanged) onTripStatusChanged(nextStatus);
                 if (nextStatus === "completed" || nextStatus === "cancelled") {
                     setTimeout(() => {
@@ -187,9 +192,7 @@ const DriverActiveTripModal = ({ isOpen, onClose, onTripStatusChanged }) => {
                                     <div>
                                         <h4 className="text-sm font-bold text-white">{trip.user_name}</h4>
                                         <p className="text-xs text-gray-400">Passenger • {trip.vehicle_type} ({trip.trip_type_name})</p>
-                                        <span className="text-xs text-yellow-400 font-semibold mt-0.5 block">
-                                            Start OTP: <span className="font-mono bg-yellow-400/20 px-1.5 py-0.5 rounded border border-yellow-400/30 font-bold">{trip.start_otp || "4921"}</span>
-                                        </span>
+                                        <span className="text-xs text-gray-400 mt-0.5 block">Ask the passenger for the trip start OTP when ready.</span>
                                     </div>
                                 </div>
 
@@ -228,14 +231,16 @@ const DriverActiveTripModal = ({ isOpen, onClose, onTripStatusChanged }) => {
                                 <div className="p-4 bg-yellow-400/10 border border-yellow-400/30 rounded-2xl space-y-2">
                                     <div className="flex items-center gap-2 text-yellow-400 text-xs font-bold">
                                         <KeyRound size={15} />
-                                        <span>Ask passenger for 4-Digit Start OTP:</span>
+                                        <span>Enter the passenger’s 6-digit trip start OTP:</span>
                                     </div>
                                     <input
                                         type="text"
-                                        maxLength="6"
-                                        placeholder="Enter customer Start OTP (e.g. 4921)"
+                                        inputMode="numeric"
+                                        pattern="[0-9]{6}"
+                                        maxLength={6}
+                                        placeholder="6-digit OTP"
                                         value={otpInput}
-                                        onChange={(e) => setOtpInput(e.target.value)}
+                                        onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
                                         className="w-full px-4 py-2.5 bg-gray-900 border border-yellow-400/50 rounded-xl text-yellow-400 font-mono text-center font-bold tracking-widest text-base focus:outline-none"
                                     />
                                 </div>

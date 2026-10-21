@@ -12,7 +12,7 @@ from rest_framework import status
 
 from database.mongodb import drivers_collection, bookings_collection, reviews_collection, notifications_collection
 from apps.authentication.services import decode_token
-from apps.bookings.services import create_user_notification
+from apps.bookings.services import create_user_notification, generate_start_otp, is_usable_start_otp
 
 
 KYC_DOCUMENT_TYPES = {"license_front", "license_back", "aadhaar_card", "address_proof", "driver_photo"}
@@ -521,12 +521,11 @@ class DriverRequestActionView(APIView):
                     "avatar": driver.get("avatar") or "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80",
                     "badge": driver.get("badge", "Verified Pro Driver"),
                     "eta_minutes": 8,
-                    "start_otp": "4921",
                     "assigned_at": datetime.utcnow()
                 }
 
-                bookings_collection.update_one(
-                    {"_id": ObjectId(booking_id)},
+                result = bookings_collection.update_one(
+                    {"_id": ObjectId(booking_id), "status": {"$in": ["searching", "pending_advance", "pending"]}, "$or": [{"driver": None}, {"driver": {"$exists": False}}]},
                     {
                         "$set": {
                             "driver": driver_obj,
@@ -535,6 +534,8 @@ class DriverRequestActionView(APIView):
                         }
                     }
                 )
+                if result.matched_count != 1:
+                    return Response({"error": "This booking has already been assigned or is no longer available."}, status=status.HTTP_409_CONFLICT)
 
                 # Update driver status to busy
                 drivers_collection.update_one(
@@ -547,7 +548,7 @@ class DriverRequestActionView(APIView):
                     create_user_notification(
                         user_id=booking["user_id"],
                         title="Driver Confirmed Your Ride! 🚖",
-                        message=f"Chauffeur {driver.get('name', 'Driver')} (KYC Verified) has accepted your booking and will arrive in ~8 mins. Start OTP: 4921",
+                        message=f"Chauffeur {driver.get('name', 'Driver')} (KYC Verified) has accepted your booking and will arrive in ~8 mins.",
                         notification_type="driver_assigned",
                         booking_id=booking_id
                     )
@@ -601,6 +602,16 @@ class DriverActiveTripView(APIView):
         if not active_booking:
             return Response({"success": True, "active_trip": None})
 
+        # Migrate already-arrived legacy trips that carried the old shared demo code.
+        if active_booking.get("status") == "arrived" and not is_usable_start_otp(active_booking.get("start_otp")):
+            bookings_collection.update_one(
+                {"_id": active_booking["_id"], "status": "arrived", "$or": [
+                    {"start_otp": {"$exists": False}}, {"start_otp": "4921"}, {"start_otp": "1234"}
+                ]},
+                {"$set": {"start_otp": generate_start_otp(), "start_otp_consumed": False, "updated_at": datetime.utcnow()}}
+            )
+            active_booking = bookings_collection.find_one({"_id": active_booking["_id"]}) or active_booking
+
         fare_info = active_booking.get("fare", {})
         total_fare = fare_info.get("total_fare", 500)
 
@@ -623,7 +634,6 @@ class DriverActiveTripView(APIView):
                 "driver_earning": round(total_fare * 0.85, 2),
                 "advance_paid": active_booking.get("advance_paid", False),
                 "remaining_paid": active_booking.get("remaining_paid", False),
-                "start_otp": active_booking.get("driver", {}).get("start_otp", "4921"),
                 "notes": active_booking.get("notes", "")
             }
         })
@@ -635,55 +645,68 @@ class DriverActiveTripView(APIView):
 
         booking_id = request.data.get("booking_id")
         new_status = request.data.get("status")
-        otp = request.data.get("otp", "").strip()
+        otp = str(request.data.get("otp", "")).strip()
 
-        valid_transitions = ["on_the_way", "arrived", "in_progress", "completed", "cancelled"]
-        if new_status not in valid_transitions:
+        if new_status not in ["on_the_way", "arrived", "in_progress", "completed", "cancelled"]:
             return Response({"error": f"Invalid status: {new_status}"}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            booking = bookings_collection.find_one({"_id": ObjectId(booking_id)})
+            try:
+                booking_object_id = ObjectId(booking_id)
+            except Exception:
+                return Response({"error": "Invalid booking ID"}, status=status.HTTP_400_BAD_REQUEST)
+            booking = bookings_collection.find_one({"_id": booking_object_id})
             if not booking:
                 return Response({"error": "Booking not found"}, status=status.HTTP_404_NOT_FOUND)
+            driver_id = str(driver["_id"])
+            if str((booking.get("driver") or {}).get("driver_id", booking.get("driver_id", ""))) != driver_id:
+                return Response({"error": "This booking is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
 
-            # If starting trip, verify OTP if provided
-            if new_status == "in_progress" and otp:
-                expected_otp = booking.get("driver", {}).get("start_otp", "4921")
-                if otp != expected_otp and otp != "1234" and otp != "4921":
-                    return Response({"error": "Invalid start OTP provided by customer. Please check with customer."}, status=status.HTTP_400_BAD_REQUEST)
-
-            update_data = {
-                "status": new_status,
-                "updated_at": datetime.utcnow()
-            }
-
-            if new_status == "completed":
-                update_data["completed_at"] = datetime.utcnow()
-                # Update driver earnings & trip count
-                total_fare = booking.get("fare", {}).get("total_fare", 500)
-                trip_earning = round(total_fare * 0.85, 2)
-                drivers_collection.update_one(
-                    {"_id": driver["_id"]},
-                    {
-                        "$inc": {"total_trips": 1, "total_earnings": trip_earning},
-                        "$set": {"status": "available", "current_booking_id": None}
-                    }
-                )
+            current_status = booking.get("status")
+            transitions = {"driver_assigned": "on_the_way", "on_the_way": "arrived", "in_progress": "completed"}
+            if new_status == "in_progress":
+                if not otp:
+                    return Response({"error": "Enter the six-digit OTP provided by the passenger."}, status=status.HTTP_400_BAD_REQUEST)
+                if current_status != "arrived":
+                    return Response({"error": "The trip can only start after you mark arrival."}, status=status.HTTP_409_CONFLICT)
+                expected_otp = booking.get("start_otp")
+                # Legacy records used a shared demo code; refuse it instead of accepting a predictable credential.
+                if not is_usable_start_otp(expected_otp):
+                    return Response({"error": "A secure trip OTP is not available. Ask the passenger to refresh the booking."}, status=status.HTTP_409_CONFLICT)
+                if otp != expected_otp:
+                    return Response({"error": "Incorrect trip start OTP. Check with the passenger and try again."}, status=status.HTTP_400_BAD_REQUEST)
+                query = {"_id": booking_object_id, "status": "arrived", "start_otp": otp, "start_otp_consumed": {"$ne": True}, "$or": [{"driver.driver_id": driver_id}, {"driver_id": driver_id}]}
+                update_data = {"status": "in_progress", "start_otp_consumed": True, "start_otp_verified_at": datetime.utcnow(), "updated_at": datetime.utcnow()}
             elif new_status == "cancelled":
-                drivers_collection.update_one(
-                    {"_id": driver["_id"]},
-                    {"$set": {"status": "available", "current_booking_id": None}}
-                )
+                if current_status not in {"driver_assigned", "on_the_way", "arrived"}:
+                    return Response({"error": "This trip can no longer be cancelled by the driver."}, status=status.HTTP_409_CONFLICT)
+                query = {"_id": booking_object_id, "status": current_status, "$or": [{"driver.driver_id": driver_id}, {"driver_id": driver_id}]}
+                update_data = {"status": "cancelled", "updated_at": datetime.utcnow()}
+            else:
+                if transitions.get(current_status) != new_status:
+                    return Response({"error": f"Trip cannot move from {current_status} to {new_status}."}, status=status.HTTP_409_CONFLICT)
+                query = {"_id": booking_object_id, "status": current_status, "$or": [{"driver.driver_id": driver_id}, {"driver_id": driver_id}]}
+                update_data = {"status": new_status, "updated_at": datetime.utcnow()}
+                if new_status == "completed":
+                    update_data["completed_at"] = datetime.utcnow()
+                if new_status == "arrived" and not is_usable_start_otp(booking.get("start_otp")):
+                    update_data["start_otp"] = generate_start_otp()
+                    update_data["start_otp_consumed"] = False
+            result = bookings_collection.update_one(query, {"$set": update_data})
+            if result.matched_count != 1:
+                return Response({"error": "Trip status changed. Refresh the trip and try again."}, status=status.HTTP_409_CONFLICT)
 
-            bookings_collection.update_one(
-                {"_id": ObjectId(booking_id)},
-                {"$set": update_data}
-            )
+            if new_status in {"completed", "cancelled"}:
+                driver_update = {"$set": {"status": "available", "current_booking_id": None}}
+                if new_status == "completed":
+                    total_fare = booking.get("fare", {}).get("total_fare", 500)
+                    driver_update["$inc"] = {"total_trips": 1, "total_earnings": round(total_fare * 0.85, 2)}
+                drivers_collection.update_one({"_id": driver["_id"]}, driver_update)
 
             # User notifications
             status_notifs = {
                 "on_the_way": ("Driver is En Route! 🚗", "Your driver is heading towards your pickup location."),
-                "arrived": ("Driver Has Arrived! 📍", "Your driver has arrived at the pickup location. Share OTP 4921 to begin."),
+                "arrived": ("Driver Has Arrived! 📍", "Your driver has arrived at the pickup location. Share the trip start code with them."),
                 "in_progress": ("Trip in Progress 🛣️", "Your journey has started. Enjoy a smooth drive!"),
                 "completed": ("Trip Completed! 🎉", "Your ride was completed safely. Please complete remaining payment and rate your driver."),
                 "cancelled": ("Trip Cancelled", "This trip was marked as cancelled.")

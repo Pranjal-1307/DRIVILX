@@ -6,7 +6,21 @@ from rest_framework import status
 
 from database.mongodb import bookings_collection, drivers_collection, reviews_collection, notifications_collection
 from apps.users.views import get_authenticated_user
-from .services import calculate_estimated_fare, find_and_assign_driver, create_user_notification
+from .services import calculate_estimated_fare, find_and_assign_driver, create_user_notification, generate_start_otp
+
+
+def _booking_driver_for_user(booking):
+    driver = dict(booking.get("driver") or {})
+    driver.pop("start_otp", None)
+    return driver or None
+
+
+def _owner_start_otp(booking):
+    if booking.get("status") == "arrived" and not booking.get("start_otp_consumed"):
+        value = booking.get("start_otp")
+        if isinstance(value, str) and len(value) == 6 and value.isdigit():
+            return value
+    return None
 
 
 class EstimateFareView(APIView):
@@ -90,6 +104,8 @@ class CreateBookingView(APIView):
             "advance_paid": False,
             "remaining_paid": False,
             "driver": None,
+            "start_otp": generate_start_otp(),
+            "start_otp_consumed": False,
             "review": None,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
@@ -131,7 +147,8 @@ class MyBookingsView(APIView):
                 "remaining_paid": b.get("remaining_paid", False),
                 "advance_payment_id": b.get("advance_payment_id"),
                 "remaining_payment_id": b.get("remaining_payment_id"),
-                "driver": b.get("driver"),
+                "driver": _booking_driver_for_user(b),
+                **({"start_otp": _owner_start_otp(b)} if _owner_start_otp(b) else {}),
                 "review": b.get("review"),
                 "created_at": b.get("created_at").isoformat() if isinstance(b.get("created_at"), datetime) else str(b.get("created_at"))
             })
@@ -167,7 +184,8 @@ class BookingDetailView(APIView):
                     "remaining_paid": b.get("remaining_paid", False),
                     "advance_payment_id": b.get("advance_payment_id"),
                     "remaining_payment_id": b.get("remaining_payment_id"),
-                    "driver": b.get("driver"),
+                    "driver": _booking_driver_for_user(b),
+                    **({"start_otp": _owner_start_otp(b)} if _owner_start_otp(b) else {}),
                     "review": b.get("review"),
                     "created_at": b.get("created_at").isoformat() if isinstance(b.get("created_at"), datetime) else str(b.get("created_at"))
                 }
@@ -284,44 +302,33 @@ class PayRemainingView(APIView):
 
 class UpdateTripStatusView(APIView):
     def post(self, request, booking_id):
-        """
-        Helper endpoint to simulate/advance trip status.
-        Status progression: driver_assigned -> on_the_way -> arrived -> in_progress -> completed
-        """
         user, error = get_authenticated_user(request)
         if error:
             return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
 
         data = request.data
         new_status = data.get("status")
-        valid_statuses = ["driver_assigned", "on_the_way", "arrived", "in_progress", "completed", "cancelled"]
-
-        if new_status not in valid_statuses:
-            return Response({"error": f"Invalid status. Must be one of {valid_statuses}"}, status=status.HTTP_400_BAD_REQUEST)
+        if new_status != "cancelled":
+            return Response({"error": "Trip progress can only be updated by the assigned driver."}, status=status.HTTP_403_FORBIDDEN)
 
         try:
             booking = bookings_collection.find_one({"_id": ObjectId(booking_id), "user_id": str(user["_id"])})
             if not booking:
                 return Response({"error": "Booking not found"}, status=status.HTTP_404_NOT_FOUND)
 
-            bookings_collection.update_one(
-                {"_id": ObjectId(booking_id)},
+            result = bookings_collection.update_one(
+                {"_id": ObjectId(booking_id), "user_id": str(user["_id"]), "status": {"$in": ["pending_advance", "searching", "driver_assigned", "on_the_way", "arrived"]}},
                 {"$set": {"status": new_status, "updated_at": datetime.utcnow()}}
             )
-
-            status_messages = {
-                "on_the_way": "Driver is on the way to your pickup location.",
-                "arrived": "Driver has arrived at your pickup spot!",
-                "in_progress": "Trip has started! Sit back and enjoy the drive.",
-                "completed": "Trip has completed safely. Please settle remaining payment.",
-                "cancelled": "Trip has been cancelled."
-            }
-
-            if new_status in status_messages:
+            if result.matched_count != 1:
+                return Response({"error": "This booking can no longer be cancelled."}, status=status.HTTP_409_CONFLICT)
+            if booking.get("driver", {}).get("driver_id"):
+                drivers_collection.update_one({"_id": ObjectId(booking["driver"]["driver_id"])}, {"$set": {"status": "available", "current_booking_id": None}})
+            if booking.get("user_id"):
                 create_user_notification(
                     user_id=user["_id"],
-                    title=f"Trip Update: {new_status.replace('_', ' ').title()}",
-                    message=status_messages[new_status],
+                    title="Trip Update: Cancelled",
+                    message="Your booking has been cancelled.",
                     notification_type="trip_update",
                     booking_id=booking_id
                 )

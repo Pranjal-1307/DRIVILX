@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React from "react";
 import {
     Car,
     Phone,
@@ -11,12 +11,9 @@ import {
     CheckCircle2,
     Sparkles,
     AlertCircle,
-    ChevronRight,
-    Loader2,
     Radio,
     Radar
 } from "lucide-react";
-import { bookingService } from "../../services/bookingService";
 
 const STATUS_PROGRESS = [
     { key: "driver_assigned", label: "Driver Assigned", desc: "Matched with top chauffeur" },
@@ -28,51 +25,15 @@ const STATUS_PROGRESS = [
 
 const ActiveTripCard = ({
     booking,
-    onStatusUpdate,
     onPayRemainingClick,
     onReviewClick
 }) => {
-    const [updatingStatus, setUpdatingStatus] = useState(false);
-    const [statusNote, setStatusNote] = useState("");
 
     if (!booking) return null;
 
     const currentStatus = booking.status || "searching";
     const driver = booking.driver;
     const fare = booking.fare || {};
-
-    const handleAdvanceTripSimulation = async (nextStatus) => {
-        setUpdatingStatus(true);
-        try {
-            const res = await bookingService.updateTripStatus(booking.id, nextStatus);
-            if (res.success) {
-                onStatusUpdate(nextStatus);
-                setStatusNote(`Trip updated to ${nextStatus.replace('_', ' ')}!`);
-                setTimeout(() => setStatusNote(""), 4000);
-            }
-        } catch (err) {
-            console.error("Status update error", err);
-        } finally {
-            setUpdatingStatus(false);
-        }
-    };
-
-    const getNextStatus = () => {
-        switch (currentStatus) {
-            case "driver_assigned":
-                return "on_the_way";
-            case "on_the_way":
-                return "arrived";
-            case "arrived":
-                return "in_progress";
-            case "in_progress":
-                return "completed";
-            default:
-                return null;
-        }
-    };
-
-    const nextStatus = getNextStatus();
 
     // -------------------------------------------------------------
     // STATE 1: SEARCHING / PENDING DRIVER (No driver assigned yet)
@@ -304,25 +265,16 @@ const ActiveTripCard = ({
                             </div>
                         </div>
 
-                        {statusNote && (
-                            <div className="text-xs text-emerald-400 bg-emerald-950/40 p-2 rounded-lg border border-emerald-800/40">
-                                {statusNote}
+                        {currentStatus === "arrived" && booking.start_otp && (
+                            <div className="p-3 rounded-xl bg-yellow-400/10 border border-yellow-400/30 text-yellow-200 text-sm">
+                                <p className="font-semibold">Your trip start code</p>
+                                <p className="mt-1 text-xs text-yellow-100/80">Share this code with your assigned driver to start the trip.</p>
+                                <p className="mt-2 font-mono text-2xl font-black tracking-[0.3em] text-yellow-300">{booking.start_otp}</p>
                             </div>
                         )}
 
-                        {/* Interactive Controls */}
+                        {/* Trip status is updated by the assigned driver. */}
                         <div className="flex flex-wrap items-center gap-3 pt-1">
-                            {nextStatus && (
-                                <button
-                                    onClick={() => handleAdvanceTripSimulation(nextStatus)}
-                                    disabled={updatingStatus}
-                                    className="px-4 py-2.5 bg-yellow-400 hover:bg-yellow-300 text-black font-bold rounded-xl text-xs flex items-center gap-1.5 transition disabled:opacity-50"
-                                >
-                                    {updatingStatus ? <Loader2 size={14} className="animate-spin" /> : <ChevronRight size={14} />}
-                                    Simulate Next Step: {nextStatus.replace('_', ' ').toUpperCase()}
-                                </button>
-                            )}
-
                             {currentStatus === "completed" && !booking.remaining_paid && (
                                 <button
                                     onClick={() => onPayRemainingClick(booking)}

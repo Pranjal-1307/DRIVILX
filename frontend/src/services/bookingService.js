@@ -31,11 +31,6 @@ export const bookingService = {
         return res.data;
     },
 
-    updateTripStatus: async (bookingId, newStatus) => {
-        const res = await api.post(`/bookings/${bookingId}/update-status/`, { status: newStatus });
-        return res.data;
-    },
-
     submitReview: async (bookingId, reviewData) => {
         const res = await api.post(`/bookings/${bookingId}/review/`, reviewData);
         return res.data;
