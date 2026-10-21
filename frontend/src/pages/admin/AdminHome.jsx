@@ -31,7 +31,10 @@ import {
     ShieldAlert,
     Star,
     Layers,
-    Percent
+    Percent,
+    X,
+    Loader2,
+    Download
 } from "lucide-react";
 
 const AdminHome = () => {
@@ -63,6 +66,53 @@ const AdminHome = () => {
     const [rejectModal, setRejectModal] = useState({ open: false, driverId: null, driverName: "", reason: "" });
     const [deleteModal, setDeleteModal] = useState({ open: false, type: "", id: null, name: "" });
     const [selectedDriverDetails, setSelectedDriverDetails] = useState(null);
+    const [kycReviewDriver, setKycReviewDriver] = useState(null);
+    const [kycReviewData, setKycReviewData] = useState(null);
+    const [kycReviewLoading, setKycReviewLoading] = useState(false);
+    const [kycReviewError, setKycReviewError] = useState("");
+    const [documentPreview, setDocumentPreview] = useState(null);
+    const [documentLoading, setDocumentLoading] = useState(false);
+    const [documentError, setDocumentError] = useState("");
+
+    useEffect(() => {
+        if (!documentPreview?.url) return undefined;
+        return () => URL.revokeObjectURL(documentPreview.url);
+    }, [documentPreview]);
+
+    const openKycReview = async (driver) => {
+        setKycReviewDriver(driver);
+        setKycReviewData(null);
+        setKycReviewError("");
+        setKycReviewLoading(true);
+        try {
+            const response = await adminService.getDriverKYC(driver.id);
+            setKycReviewData(response);
+        } catch (err) {
+            setKycReviewError(err.response?.data?.error || "Could not load this driver's saved KYC review.");
+        } finally {
+            setKycReviewLoading(false);
+        }
+    };
+
+    const openDocumentPreview = async (driver, document) => {
+        setDocumentPreview(null);
+        setDocumentError("");
+        setDocumentLoading(true);
+        try {
+            const blob = await adminService.getDriverKYCDocument(driver.id, document.category, document.reference);
+            setDocumentPreview({
+                ...document,
+                url: URL.createObjectURL(blob),
+                contentType: blob.type || document.content_type || "application/octet-stream"
+            });
+        } catch (err) {
+            setDocumentError(err.response?.status === 401 || err.response?.status === 403
+                ? "Your admin session cannot access this document. Sign in again and retry."
+                : "This document could not be loaded. It may have been removed or storage may be unavailable.");
+        } finally {
+            setDocumentLoading(false);
+        }
+    };
 
     const showToast = (message, type = "success") => {
         setToast({ message, type });
@@ -109,7 +159,10 @@ const AdminHome = () => {
             await adminService.updateDriverKYC(driverId, "approve");
             showToast(`KYC Approved for ${driverName}! Driver is now verified.`);
             // Update local state
-            setDrivers(prev => prev.map(d => d.id === driverId ? { ...d, kyc_status: "verified", badge: "Verified Pro Driver" } : d));
+            setDrivers(prev => prev.map(d => d.id === driverId ? { ...d, kyc_status: "verified", badge: "Verified Pro Driver",
+                documents: Object.fromEntries(Object.entries(d.documents || {}).map(([key, doc]) => [key, doc.uploaded ? { ...doc, status: "verified" } : doc])) } : d));
+            setKycReviewData(prev => prev ? { ...prev, driver: { ...prev.driver, kyc_status: "verified" }, kyc: { ...prev.kyc, status: "verified", documents: Object.fromEntries(Object.entries(prev.kyc.documents || {}).map(([key, doc]) => [key, doc.uploaded ? { ...doc, status: "verified" } : doc])) } } : prev);
+            adminService.getDriverKYC(driverId).then(setKycReviewData).catch(() => {});
             if (analytics?.summary) {
                 setAnalytics(prev => ({
                     ...prev,
@@ -133,9 +186,13 @@ const AdminHome = () => {
     const handleConfirmRejectKYC = async () => {
         if (!rejectModal.driverId) return;
         try {
-            await adminService.updateDriverKYC(rejectModal.driverId, "reject", rejectModal.reason);
+            if (!rejectModal.reason.trim()) return;
+            await adminService.updateDriverKYC(rejectModal.driverId, "reject", rejectModal.reason.trim());
             showToast(`KYC for ${rejectModal.driverName} has been rejected.`);
-            setDrivers(prev => prev.map(d => d.id === rejectModal.driverId ? { ...d, kyc_status: "rejected", rejection_reason: rejectModal.reason } : d));
+            setDrivers(prev => prev.map(d => d.id === rejectModal.driverId ? { ...d, kyc_status: "rejected", rejection_reason: rejectModal.reason.trim(),
+                documents: Object.fromEntries(Object.entries(d.documents || {}).map(([key, doc]) => [key, doc.uploaded ? { ...doc, status: "rejected" } : doc])) } : d));
+            setKycReviewData(prev => prev ? { ...prev, driver: { ...prev.driver, kyc_status: "rejected", rejection_reason: rejectModal.reason.trim() }, kyc: { ...prev.kyc, status: "rejected", documents: Object.fromEntries(Object.entries(prev.kyc.documents || {}).map(([key, doc]) => [key, doc.uploaded ? { ...doc, status: "rejected" } : doc])) } } : prev);
+            adminService.getDriverKYC(rejectModal.driverId).then(setKycReviewData).catch(() => {});
             setRejectModal({ open: false, driverId: null, driverName: "", reason: "" });
         } catch (err) {
             showToast(err.response?.data?.error || "Failed to reject KYC", "error");
@@ -668,7 +725,7 @@ const AdminHome = () => {
                                                 </div>
                                                 <div>
                                                     <span className="text-slate-500">Driving License</span>
-                                                    <p className="text-amber-400 font-mono font-bold">{driver.license_number || "DL-0420199482"}</p>
+                                                    <p className="text-amber-400 font-mono font-bold">{driver.license_number || "Not provided"}</p>
                                                 </div>
                                                 <div>
                                                     <span className="text-slate-500">Experience</span>
@@ -680,17 +737,15 @@ const AdminHome = () => {
                                                 </div>
                                             </div>
 
-                                            {/* Document Checklist Badges */}
-                                            <div className="flex items-center gap-2 mb-4">
-                                                <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
-                                                    <FileText size={11} className="text-amber-400" /> License Card
-                                                </span>
-                                                <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
-                                                    <ShieldCheck size={11} className="text-sky-400" /> Aadhar / ID
-                                                </span>
-                                                <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
-                                                    <CheckCircle2 size={11} className="text-emerald-400" /> Police Verified
-                                                </span>
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4">
+                                                {Object.values(driver.documents || {}).map(document => (
+                                                    <div key={document.category} className="flex items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-3 py-2 text-[11px]">
+                                                        <span className="text-slate-300">{document.label}</span>
+                                                        <span className={`shrink-0 font-semibold ${document.status === "verified" ? "text-emerald-400" : document.status === "rejected" ? "text-rose-400" : document.uploaded ? "text-amber-400" : "text-slate-500"}`}>
+                                                            {document.uploaded ? (document.status === "pending" ? "Pending review" : document.status.replaceAll("_", " ")) : "Missing"}
+                                                        </span>
+                                                    </div>
+                                                ))}
                                             </div>
 
                                             {isRejected && driver.rejection_reason && (
@@ -702,22 +757,10 @@ const AdminHome = () => {
                                             {/* Actions */}
                                             <div className="flex items-center gap-2 pt-2 border-t border-slate-800">
                                                 <button
-                                                    onClick={() => handleApproveKYC(driver.id, driver.name)}
-                                                    disabled={isVerified}
-                                                    className={`flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold transition-all ${
-                                                        isVerified
-                                                            ? "bg-slate-800 text-slate-500 cursor-not-allowed"
-                                                            : "bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20 active:scale-95"
-                                                    }`}
+                                                    onClick={() => openKycReview(driver)}
+                                                    className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold bg-amber-400 hover:bg-amber-300 text-slate-950 transition-all active:scale-95"
                                                 >
-                                                    <CheckCircle2 size={14} /> {isVerified ? "Approved" : "Approve KYC"}
-                                                </button>
-
-                                                <button
-                                                    onClick={() => handleOpenRejectModal(driver)}
-                                                    className="flex-1 flex items-center justify-center gap-1.5 py-2 px-3 rounded-xl text-xs font-bold bg-rose-900/30 hover:bg-rose-900/60 text-rose-300 border border-rose-800/50 transition-all active:scale-95"
-                                                >
-                                                    <XCircle size={14} /> Reject
+                                                    <Eye size={14} /> Review documents & history
                                                 </button>
 
                                                 <button
@@ -1087,6 +1130,93 @@ const AdminHome = () => {
                 )}
             </main>
 
+            {kycReviewDriver && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/85 backdrop-blur-sm">
+                    <div className="w-full max-w-4xl max-h-[92vh] overflow-hidden rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl flex flex-col">
+                        <div className="flex items-center justify-between p-5 border-b border-slate-800">
+                            <div>
+                                <h2 className="text-lg font-bold text-white">KYC review · {kycReviewDriver.name}</h2>
+                                <p className="text-xs text-slate-400 mt-1">Status: <span className="text-amber-300 uppercase">{kycReviewData?.driver?.kyc_status || kycReviewDriver.kyc_status}</span></p>
+                            </div>
+                            <button onClick={() => { setKycReviewDriver(null); setKycReviewData(null); }} className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300" aria-label="Close KYC review"><X size={18} /></button>
+                        </div>
+                        <div className="p-5 overflow-y-auto space-y-6">
+                            {kycReviewLoading && <p className="flex items-center gap-2 text-sm text-slate-300"><Loader2 size={16} className="animate-spin" /> Loading saved KYC details…</p>}
+                            {kycReviewError && <p className="p-3 rounded-lg bg-rose-950/50 border border-rose-900 text-rose-300 text-sm">{kycReviewError}</p>}
+                            {kycReviewData && <>
+                                <section>
+                                    <h3 className="text-sm font-bold text-white mb-3">Submitted identity fields</h3>
+                                    <div className="grid sm:grid-cols-2 gap-3 text-sm">
+                                        {[["Driving licence number", kycReviewData.kyc.license_number], ["Licence expiry", kycReviewData.kyc.license_expiry], ["Aadhaar number", kycReviewData.kyc.aadhaar_number], ["PAN number", kycReviewData.kyc.pan_number]].map(([label, value]) => (
+                                            <div key={label} className="p-3 rounded-xl bg-slate-950 border border-slate-800"><span className="text-xs text-slate-500">{label}</span><p className="mt-1 text-slate-200 font-medium">{value || "Not provided"}</p></div>
+                                        ))}
+                                    </div>
+                                </section>
+                                <section>
+                                    <h3 className="text-sm font-bold text-white mb-3">Submitted documents</h3>
+                                    <div className="space-y-2">
+                                        {Object.values(kycReviewData.kyc.documents || {}).map(document => (
+                                            <div key={document.category} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl bg-slate-950 border border-slate-800">
+                                                <div className="min-w-0">
+                                                    <div className="flex items-center gap-2"><span className="text-sm font-semibold text-slate-200">{document.label}</span><span className={`text-[10px] uppercase font-bold ${document.status === "verified" ? "text-emerald-400" : document.status === "rejected" ? "text-rose-400" : document.uploaded ? "text-amber-300" : "text-slate-500"}`}>{document.uploaded ? (document.status === "pending" ? "Pending review" : document.status.replaceAll("_", " ")) : "Missing"}</span></div>
+                                                    {document.uploaded && <p className="text-xs text-slate-400 mt-1 truncate">{document.original_filename} · {document.file_size ? `${(document.file_size / 1024).toFixed(1)} KB` : "Size unavailable"} · {document.uploaded_at ? new Date(document.uploaded_at).toLocaleString() : "Upload date unavailable"}</p>}
+                                                </div>
+                                                {document.uploaded && <button onClick={() => openDocumentPreview(kycReviewDriver, { category: document.category, label: document.label, reference: document.storage_reference, filename: document.original_filename, file_size: document.file_size, uploaded_at: document.uploaded_at, content_type: document.content_type, status: document.status })} className="shrink-0 px-3 py-2 rounded-lg bg-slate-800 hover:bg-amber-400 hover:text-slate-950 text-slate-200 text-xs font-semibold flex items-center gap-2"><Eye size={14} /> Preview</button>}
+                                            </div>
+                                        ))}
+                                    </div>
+                                    {documentLoading && <p className="mt-3 text-xs text-slate-400 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Loading private document…</p>}
+                                    {documentError && <p className="mt-3 text-xs text-rose-300">{documentError}</p>}
+                                </section>
+                                <section>
+                                    <h3 className="text-sm font-bold text-white mb-3">Change history</h3>
+                                    {!kycReviewData.history?.length ? <p className="text-sm text-slate-500">No change history is available for earlier submissions.</p> : <div className="space-y-3">
+                                        {[...kycReviewData.history].reverse().map((entry, index) => (
+                                            <div key={`${entry.submission_id || entry.timestamp}-${index}`} className="p-3 rounded-xl bg-slate-950 border border-slate-800">
+                                                <div className="flex flex-wrap justify-between gap-2 text-xs"><strong className="text-slate-200">{entry.actor === "admin" ? "Admin review" : "Driver submission"} · {entry.submission_id ? entry.submission_id.slice(0, 10) : "Review"}</strong><span className="text-slate-500">{entry.timestamp ? new Date(entry.timestamp).toLocaleString() : "Date unavailable"}</span></div>
+                                                <div className="mt-2 space-y-2">
+                                                    {(entry.changes || []).map((change, changeIndex) => {
+                                                        const describe = value => value == null ? "—" : typeof value === "object" ? `${value.filename || "Document"}${value.file_size ? ` (${(value.file_size / 1024).toFixed(1)} KB)` : ""}` : String(value);
+                                                        return <div key={`${change.key}-${changeIndex}`} className="text-xs text-slate-400">
+                                                            <span className="text-amber-300 capitalize">{change.change}</span> · {change.entity === "document" ? (kycReviewData.kyc.documents[change.key]?.label || change.key.replaceAll("_", " ")) : change.entity === "review" ? "Review status" : change.key.replaceAll("_", " ")}
+                                                            <span className="block mt-1">{describe(change.before)} → {describe(change.after)}</span>
+                                                            {change.reason && <span className="block mt-1 text-slate-500">Reason: {change.reason}</span>}
+                                                            {change.entity === "document" && change.before?.reference && <button onClick={() => openDocumentPreview(kycReviewDriver, { category: change.key, label: change.key.replaceAll("_", " "), reference: change.before.reference, filename: change.before.filename, file_size: change.before.file_size, uploaded_at: change.before.uploaded_at, content_type: change.before.content_type, status: change.before.status })} className="mt-1 text-amber-300 hover:text-amber-200 underline">View previous version</button>}
+                                                        </div>;
+                                                    })}
+                                                </div>
+                                                <p className="mt-2 text-[10px] text-slate-600">Only changed values are listed; values omitted from this submission were unchanged.</p>
+                                            </div>
+                                        ))}
+                                    </div>}
+                                </section>
+                                <div className="flex flex-wrap justify-end gap-2 border-t border-slate-800 pt-4">
+                                    <button onClick={() => handleOpenRejectModal(kycReviewDriver)} className="px-4 py-2 rounded-xl bg-rose-950/60 hover:bg-rose-900 text-rose-200 border border-rose-900 text-xs font-bold flex items-center gap-2"><XCircle size={14} /> Reject</button>
+                                    <button onClick={() => handleApproveKYC(kycReviewDriver.id, kycReviewDriver.name)} disabled={kycReviewData.driver.kyc_status === "verified" || Object.values(kycReviewData.kyc.documents || {}).some(document => !document.uploaded)} className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold flex items-center gap-2"><CheckCircle2 size={14} /> Approve KYC</button>
+                                </div>
+                                {Object.values(kycReviewData.kyc.documents || {}).some(document => !document.uploaded) && <p className="text-right text-xs text-amber-300">All five required documents must be present before approval.</p>}
+                            </>}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {documentPreview && (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center p-3 sm:p-6 bg-slate-950/95">
+                    <div className="w-full max-w-6xl h-[92vh] rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl flex flex-col overflow-hidden">
+                        <div className="flex items-center justify-between gap-4 p-4 border-b border-slate-800">
+                            <div className="min-w-0"><h3 className="font-bold text-white">{documentPreview.label}</h3><p className="text-xs text-slate-400 truncate">{documentPreview.filename} · {documentPreview.uploaded_at ? new Date(documentPreview.uploaded_at).toLocaleString() : "Upload date unavailable"} · {documentPreview.file_size ? `${(documentPreview.file_size / 1024).toFixed(1)} KB` : "Size unavailable"} · {documentPreview.status}</p></div>
+                            <div className="flex items-center gap-2"><a href={documentPreview.url} download={documentPreview.filename || "kyc-document"} className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200" title="Download securely"><Download size={17} /></a><button onClick={() => setDocumentPreview(null)} className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200" aria-label="Close preview"><X size={18} /></button></div>
+                        </div>
+                        <div className="flex-1 min-h-0 bg-black/40 flex items-center justify-center p-2">
+                            {documentPreview.contentType.startsWith("image/") ? <img src={documentPreview.url} alt={documentPreview.label} className="max-w-full max-h-full object-contain" />
+                                : documentPreview.contentType === "application/pdf" ? <iframe title={documentPreview.label} src={documentPreview.url} className="w-full h-full bg-white" />
+                                    : <div className="text-center text-slate-300"><FileText size={40} className="mx-auto mb-3 text-amber-300" /><p className="mb-4">This file type cannot be previewed in the browser.</p><a href={documentPreview.url} download={documentPreview.filename || "kyc-document"} className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-400 text-slate-950 font-bold text-sm"><Download size={16} /> Download document</a></div>}
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* =========================================================================
                 MODAL: REJECT KYC REASON
             ========================================================================= */}
@@ -1116,6 +1246,7 @@ const AdminHome = () => {
                             </button>
                             <button
                                 onClick={handleConfirmRejectKYC}
+                                disabled={!rejectModal.reason.trim()}
                                 className="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-500 text-white text-xs font-bold shadow-lg shadow-rose-600/20 transition-all"
                             >
                                 Confirm Rejection

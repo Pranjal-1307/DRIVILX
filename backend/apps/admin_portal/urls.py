@@ -8,6 +8,7 @@ from .views import (
     AdminDriverDetailView,
     AdminDriverSuspendView,
     AdminDriverKYCView,
+    AdminDriverKYCFileView,
     AdminBookingsListView,
 )
 
@@ -20,5 +21,6 @@ urlpatterns = [
     path("drivers/<str:driver_id>/", AdminDriverDetailView.as_view(), name="admin_driver_detail"),
     path("drivers/<str:driver_id>/suspend/", AdminDriverSuspendView.as_view(), name="admin_driver_suspend"),
     path("drivers/<str:driver_id>/kyc/", AdminDriverKYCView.as_view(), name="admin_driver_kyc"),
+    path("drivers/<str:driver_id>/kyc/documents/<str:category>/", AdminDriverKYCFileView.as_view(), name="admin_driver_kyc_document"),
     path("bookings/", AdminBookingsListView.as_view(), name="admin_bookings"),
 ]

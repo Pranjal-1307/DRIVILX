@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
     X,
     ShieldCheck,
@@ -20,20 +20,13 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
     const [submitting, setSubmitting] = useState(false);
     const [successMsg, setSuccessMsg] = useState("");
     const [errorMsg, setErrorMsg] = useState("");
+    const [fileErrors, setFileErrors] = useState({});
+    const [selectedFiles, setSelectedFiles] = useState({});
+    const submissionLock = useRef(false);
 
     const [kycForm, setKycForm] = useState({
-        pan_number: "ABCDE1234F",
-        aadhaar_number: "XXXX-XXXX-4892",
-        license_number: "DL-0420180039211",
-        license_expiry: "2030-12-31",
-        status: "verified",
-        documents: {
-            license_front: { name: "Driving_License_Front.jpg", status: "approved", uploaded: true },
-            license_back: { name: "Driving_License_Back.jpg", status: "approved", uploaded: true },
-            aadhaar_card: { name: "Aadhaar_Document.pdf", status: "approved", uploaded: true },
-            address_proof: { name: "Electricity_Bill.pdf", status: "approved", uploaded: true },
-            driver_photo: { name: "Driver_Selfie.jpg", status: "approved", uploaded: true }
-        }
+        pan_number: "", aadhaar_number: "", license_number: "", license_expiry: "",
+        status: "pending", documents: {}
     });
 
     useEffect(() => {
@@ -52,50 +45,57 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                     aadhaar_number: res.kyc.aadhaar_number || "",
                     license_number: res.kyc.license_number || "",
                     license_expiry: res.kyc.license_expiry || "",
-                    status: res.status || "verified",
-                    documents: res.kyc.documents || kycForm.documents
+                    status: res.status || "pending",
+                    documents: res.kyc.documents || {}
                 });
             }
         } catch (err) {
-            console.error("Failed to load KYC", err);
+            setErrorMsg(err.response?.data?.error || "Could not load saved KYC information.");
         } finally {
             setLoading(false);
         }
     };
 
-    const handleDocumentUploadSim = (docKey, filename) => {
-        setKycForm(prev => ({
-            ...prev,
-            documents: {
-                ...prev.documents,
-                [docKey]: {
-                    name: filename || `${docKey}_uploaded.pdf`,
-                    status: "under_review",
-                    uploaded: true
-                }
-            }
-        }));
+    const handleDocumentSelect = (docKey, file) => {
+        setFileErrors(prev => ({ ...prev, [docKey]: "" }));
+        if (file && file.size > 10 * 1024 * 1024) {
+            setFileErrors(prev => ({ ...prev, [docKey]: "File must be 10 MB or smaller." }));
+            return;
+        }
+        if (file && file.type && !["application/pdf", "image/jpeg", "image/png"].includes(file.type)) {
+            setFileErrors(prev => ({ ...prev, [docKey]: "Choose a PDF, JPEG, or PNG file." }));
+            return;
+        }
+        setSelectedFiles(prev => ({ ...prev, [docKey]: file }));
     };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        if (submissionLock.current || submitting) return;
+        submissionLock.current = true;
         setSubmitting(true);
         setErrorMsg("");
         setSuccessMsg("");
 
         try {
-            const res = await driverService.submitKYC(kycForm);
+            const res = await driverService.submitKYC({
+                fields: Object.fromEntries(["pan_number", "aadhaar_number", "license_number", "license_expiry"].map(key => [key, kycForm[key]])),
+                files: selectedFiles
+            });
             if (res.success) {
                 setSuccessMsg(res.message || "KYC documents submitted successfully!");
-                setKycForm(prev => ({ ...prev, status: "under_review" }));
-                if (onKYCUpdated) onKYCUpdated("under_review");
+                setKycForm(prev => ({ ...prev, ...res.kyc, status: res.status, documents: res.kyc.documents || prev.documents }));
+                setSelectedFiles({});
+                if (onKYCUpdated) onKYCUpdated(res.status || "under_review");
                 setTimeout(() => {
                     setSuccessMsg("");
                 }, 4000);
             }
         } catch (err) {
-            setErrorMsg(err.response?.data?.error || "Failed to submit KYC. Please try again.");
+            const detail = err.response?.data;
+            setErrorMsg(detail?.error || Object.values(detail || {}).flat().join(" ") || "Failed to submit KYC. Please try again.");
         } finally {
+            submissionLock.current = false;
             setSubmitting(false);
         }
     };
@@ -110,7 +110,7 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
         { key: "driver_photo", label: "Driver Selfie / Portrait", icon: Camera, hint: "Clear front-facing photo with white/plain background" },
     ];
 
-    const uploadedCount = Object.values(kycForm.documents || {}).filter(d => d.uploaded).length;
+    const uploadedCount = docItems.filter(({ key }) => Boolean(selectedFiles[key] || kycForm.documents?.[key]?.uploaded)).length;
     const progressPercent = Math.min(100, Math.round((uploadedCount / docItems.length) * 100));
 
     return (
@@ -132,7 +132,7 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                                         ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
                                         : "bg-red-500/10 text-red-400 border-red-500/30"
                                 }`}>
-                                    {kycForm.status === "verified" ? "Verified" : kycForm.status === "under_review" ? "Under Review" : "Action Required"}
+                                    {kycForm.status === "verified" ? "Verified" : kycForm.status === "under_review" ? "Under Review" : kycForm.status === "rejected" ? "Rejected" : "Action Required"}
                                 </span>
                             </h2>
                             <p className="text-xs text-gray-400">Complete verification to accept bookings and unlock highest payouts</p>
@@ -178,6 +178,8 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                             <span>{errorMsg}</span>
                         </div>
                     )}
+
+                    {loading && <div className="text-sm text-gray-400 flex items-center gap-2"><Loader2 size={15} className="animate-spin" /> Loading saved KYC information…</div>}
 
                     {/* KYC Form */}
                     <form onSubmit={handleSubmit} className="space-y-6">
@@ -250,7 +252,8 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                                 {docItems.map((doc) => {
                                     const Icon = doc.icon;
                                     const currentDoc = kycForm.documents?.[doc.key];
-                                    const isUploaded = currentDoc?.uploaded;
+                                    const selectedFile = selectedFiles[doc.key];
+                                    const isUploaded = Boolean(selectedFile || currentDoc?.uploaded);
 
                                     return (
                                         <div
@@ -263,7 +266,7 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                                                 </div>
                                                 <div>
                                                     <h4 className="text-sm font-semibold text-gray-200">{doc.label}</h4>
-                                                    <p className="text-xs text-gray-500">{currentDoc?.name || doc.hint}</p>
+                                                    <p className="text-xs text-gray-500">{selectedFile?.name || currentDoc?.original_filename || currentDoc?.name || doc.hint}</p>
                                                 </div>
                                             </div>
 
@@ -271,7 +274,7 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                                                 {isUploaded ? (
                                                     <span className="flex items-center gap-1.5 text-xs text-emerald-400 bg-emerald-500/10 px-2.5 py-1 rounded-lg border border-emerald-500/20">
                                                         <CheckCircle2 size={13} />
-                                                        {currentDoc.status === "approved" ? "Approved" : "Under Review"}
+                                                        {selectedFile ? "Ready to upload" : currentDoc.status === "verified" ? "Verified" : currentDoc.status === "approved" ? "Approved" : "Saved"}
                                                     </span>
                                                 ) : null}
 
@@ -280,17 +283,17 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                                                     {isUploaded ? "Replace" : "Upload"}
                                                     <input
                                                         type="file"
-                                                        accept="image/*,.pdf"
+                                                        accept="image/jpeg,image/png,application/pdf,.jpg,.jpeg,.png,.pdf"
                                                         className="hidden"
                                                         onChange={(e) => {
                                                             const file = e.target.files?.[0];
-                                                            if (file) {
-                                                                handleDocumentUploadSim(doc.key, file.name);
-                                                            }
+                                                            if (file) handleDocumentSelect(doc.key, file);
+                                                            e.target.value = "";
                                                         }}
                                                     />
                                                 </label>
                                             </div>
+                                            {fileErrors[doc.key] && <p className="text-xs text-rose-400 mt-2">{fileErrors[doc.key]}</p>}
                                         </div>
                                     );
                                 })}
@@ -301,7 +304,7 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                         <div className="pt-2">
                             <button
                                 type="submit"
-                                disabled={submitting || loading}
+                                disabled={submitting || loading || Object.values(fileErrors).some(Boolean)}
                                 className="w-full py-3.5 px-6 rounded-2xl bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg shadow-yellow-400/20 hover:shadow-yellow-400/30 transition disabled:opacity-50"
                             >
                                 {submitting ? (

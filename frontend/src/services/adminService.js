@@ -39,6 +39,19 @@ export const adminService = {
         return res.data;
     },
 
+    getDriverKYC: async (driverId) => {
+        const res = await api.get(`/admin/drivers/${driverId}/kyc/`);
+        return res.data;
+    },
+
+    getDriverKYCDocument: async (driverId, category, reference) => {
+        const res = await api.get(`/admin/drivers/${driverId}/kyc/documents/${category}/`, {
+            params: { reference },
+            responseType: "blob"
+        });
+        return res.data;
+    },
+
     deleteDriver: async (driverId) => {
         const res = await api.delete(`/admin/drivers/${driverId}/`);
         return res.data;

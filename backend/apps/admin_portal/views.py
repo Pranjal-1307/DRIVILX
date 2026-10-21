@@ -1,5 +1,11 @@
 from datetime import datetime, timedelta
+import os
+import re
+from pathlib import Path
 from bson import ObjectId
+from django.conf import settings
+from django.http import FileResponse
+from django.utils.http import content_disposition_header
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -13,6 +19,48 @@ from database.mongodb import (
     notifications_collection
 )
 from apps.authentication.services import decode_token
+
+
+KYC_DOCUMENT_CATEGORIES = {
+    "license_front": "Driving licence (front)",
+    "license_back": "Driving licence (back)",
+    "aadhaar_card": "Aadhaar card",
+    "address_proof": "Address proof",
+    "driver_photo": "Driver photo",
+}
+
+
+def _mask_kyc_number(field, value):
+    text = str(value or "")
+    if not text:
+        return ""
+    if field == "aadhaar_number":
+        digits = "".join(character for character in text if character.isdigit())
+        return f"•••• •••• {digits[-4:]}" if digits else "••••"
+    if field == "pan_number":
+        return f"••••••{text[-4:]}" if len(text) > 4 else "••••"
+    return text
+
+
+def admin_kyc_private_root():
+    return Path(os.getenv("KYC_PRIVATE_STORAGE", settings.BASE_DIR / "private_uploads")).resolve()
+
+
+def admin_kyc_document_list(driver):
+    raw_documents = ((driver.get("kyc") or {}).get("documents") or {})
+    return {
+        key: {
+            "category": key,
+            "label": label,
+            "uploaded": bool(isinstance(raw_documents.get(key), dict) and raw_documents[key].get("storage_key")),
+            "original_filename": raw_documents.get(key, {}).get("original_filename", "") if isinstance(raw_documents.get(key), dict) else "",
+            "content_type": raw_documents.get(key, {}).get("content_type", "") if isinstance(raw_documents.get(key), dict) else "",
+            "file_size": raw_documents.get(key, {}).get("file_size", 0) if isinstance(raw_documents.get(key), dict) else 0,
+            "uploaded_at": raw_documents.get(key, {}).get("uploaded_at") if isinstance(raw_documents.get(key), dict) else None,
+            "status": raw_documents.get(key, {}).get("status", "pending") if isinstance(raw_documents.get(key), dict) and raw_documents[key].get("storage_key") else "missing",
+        }
+        for key, label in KYC_DOCUMENT_CATEGORIES.items()
+    }
 
 
 def get_authenticated_admin(request):
@@ -361,17 +409,14 @@ class AdminDriversListView(APIView):
                 "rejection_reason": d.get("rejection_reason", ""),
                 "experience_years": d.get("experience_years", 3),
                 "car_experience": d.get("car_experience", ["Manual", "Automatic"]),
-                "license_number": d.get("license_number", "DL-Pending"),
+                "license_number": d.get("license_number", ""),
                 "rating": d.get("rating", 4.9),
                 "total_trips": max(d.get("total_trips", 0), trips_count),
                 "total_earnings": d.get("total_earnings", 0),
                 "avatar": d.get("avatar", ""),
                 "created_at": created_at_str,
-                "documents": d.get("documents", {
-                    "driving_license": d.get("license_doc", "Uploaded / Verified"),
-                    "aadhar_card": d.get("aadhar_doc", "Uploaded / Verified"),
-                    "police_verification": d.get("police_doc", "Uploaded / Verified")
-                })
+                "documents": admin_kyc_document_list(d),
+                "kyc_submitted_at": (d.get("kyc") or {}).get("submitted_at"),
             })
 
         return Response({
@@ -439,6 +484,34 @@ class AdminDriverSuspendView(APIView):
 
 
 class AdminDriverKYCView(APIView):
+    def get(self, request, driver_id):
+        admin, error = get_authenticated_admin(request)
+        if error:
+            return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+        try:
+            driver = drivers_collection.find_one({"_id": ObjectId(driver_id)})
+        except Exception:
+            driver = None
+        if not driver:
+            return Response({"error": "Driver not found"}, status=status.HTTP_404_NOT_FOUND)
+        kyc = driver.get("kyc") or {}
+        raw_documents = kyc.get("documents") or {}
+        documents = admin_kyc_document_list(driver)
+        for key, value in documents.items():
+            raw = raw_documents.get(key)
+            value["storage_reference"] = raw.get("storage_key") if isinstance(raw, dict) and raw.get("storage_key") else None
+        return Response({
+            "success": True,
+            "driver": {"id": str(driver["_id"]), "name": driver.get("name", ""), "kyc_status": driver.get("kyc_status", "pending"),
+                       "rejection_reason": driver.get("rejection_reason", "")},
+            "kyc": {"aadhaar_number": _mask_kyc_number("aadhaar_number", kyc.get("aadhaar_number")),
+                    "pan_number": _mask_kyc_number("pan_number", kyc.get("pan_number")),
+                    "license_number": kyc.get("license_number", ""), "license_expiry": kyc.get("license_expiry", ""),
+                    "status": driver.get("kyc_status", "pending"), "submission_id": kyc.get("submission_id"),
+                    "submitted_at": kyc.get("submitted_at"), "documents": documents},
+            "history": driver.get("kyc_history", [])
+        })
+
     def put(self, request, driver_id):
         admin, error = get_authenticated_admin(request)
         if error:
@@ -454,6 +527,12 @@ class AdminDriverKYCView(APIView):
 
             if decision not in ["approve", "reject", "verified", "rejected"]:
                 return Response({"error": "Invalid decision. Choose approve or reject."}, status=status.HTTP_400_BAD_REQUEST)
+            if decision in ["reject", "rejected"] and not reason:
+                return Response({"error": "A rejection reason is required."}, status=status.HTTP_400_BAD_REQUEST)
+            if decision in ["approve", "verified"]:
+                submitted_documents = (driver.get("kyc") or {}).get("documents") or {}
+                if any(not isinstance(submitted_documents.get(category), dict) or not submitted_documents[category].get("storage_key") for category in KYC_DOCUMENT_CATEGORIES):
+                    return Response({"error": "All five real KYC documents must be submitted before approval."}, status=status.HTTP_400_BAD_REQUEST)
 
             if decision in ["approve", "verified"]:
                 new_status = "verified"
@@ -464,6 +543,11 @@ class AdminDriverKYCView(APIView):
                 badge = "KYC Rejected"
                 notification_msg = f"Your DRIVIX Driver KYC was not approved. Reason: {reason or 'Document verification failed'}. Please re-submit valid documents."
 
+            previous_status = driver.get("kyc_status", "pending")
+            previous_reason = driver.get("rejection_reason", "")
+            if previous_status == new_status and (new_status == "verified" or previous_reason == reason):
+                return Response({"success": True, "message": f"Driver KYC is already {new_status}.", "kyc_status": new_status})
+
             update_doc = {
                 "kyc_status": new_status,
                 "badge": badge,
@@ -472,10 +556,22 @@ class AdminDriverKYCView(APIView):
                 "updated_at": datetime.utcnow()
             }
 
-            drivers_collection.update_one(
-                {"_id": ObjectId(driver_id)},
-                {"$set": update_doc}
-            )
+            kyc = driver.get("kyc") or {}
+            for category, metadata in (kyc.get("documents") or {}).items():
+                if isinstance(metadata, dict) and metadata.get("storage_key"):
+                    metadata["status"] = new_status
+            now = datetime.utcnow()
+            kyc["status"] = new_status
+            kyc["reviewed_at"] = now
+            history = driver.get("kyc_history") or []
+            review_change = ({"entity": "review", "key": "kyc_status", "change": "changed", "before": previous_status, "after": new_status}
+                             if previous_status != new_status else {"entity": "review", "key": "rejection_reason", "change": "changed", "before": previous_reason, "after": reason})
+            if reason:
+                review_change["reason"] = reason
+            history.append({"submission_id": kyc.get("submission_id"), "actor": "admin", "actor_id": str(admin["_id"]),
+                            "timestamp": now, "changes": [review_change]})
+            update_doc.update({"kyc": kyc, "kyc_history": history})
+            drivers_collection.update_one({"_id": ObjectId(driver_id)}, {"$set": update_doc})
 
             # Send notification to driver
             notifications_collection.insert_one({
@@ -496,6 +592,53 @@ class AdminDriverKYCView(APIView):
             })
         except Exception as e:
             return Response({"error": f"Error updating driver KYC: {str(e)}"}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminDriverKYCFileView(APIView):
+    def get(self, request, driver_id, category):
+        admin, error = get_authenticated_admin(request)
+        if error:
+            return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+        if category not in KYC_DOCUMENT_CATEGORIES:
+            return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            driver = drivers_collection.find_one({"_id": ObjectId(driver_id)})
+            if not driver:
+                return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            reference = request.query_params.get("reference", "")
+            if not re.fullmatch(r"[0-9a-f]{24}/[0-9a-f]{32}\.(?:pdf|jpe?g|png)", reference):
+                return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            current = ((driver.get("kyc") or {}).get("documents") or {}).get(category)
+            authorized_metadata = current if isinstance(current, dict) and current.get("storage_key") == reference else None
+            if not authorized_metadata:
+                for entry in driver.get("kyc_history", []) or []:
+                    for change in entry.get("changes", []) or []:
+                        if change.get("entity") == "document" and change.get("key") == category:
+                            for side in ("before", "after"):
+                                previous = change.get(side)
+                                if isinstance(previous, dict) and previous.get("reference") == reference:
+                                    authorized_metadata = previous
+                                    break
+                        if authorized_metadata:
+                            break
+                    if authorized_metadata:
+                        break
+            if not authorized_metadata:
+                return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            root = admin_kyc_private_root()
+            resolved = (root / reference).resolve()
+            driver_root = (root / str(driver["_id"])).resolve()
+            if resolved.parent != driver_root or not resolved.is_file():
+                return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            content_type = authorized_metadata.get("content_type", "application/octet-stream")
+            inline = content_type in {"application/pdf", "image/jpeg", "image/png"}
+            response = FileResponse(resolved.open("rb"), content_type=content_type)
+            response["Content-Disposition"] = content_disposition_header(not inline, authorized_metadata.get("filename", authorized_metadata.get("original_filename", "document")))
+            response["X-Content-Type-Options"] = "nosniff"
+            response["Cache-Control"] = "private, no-store"
+            return response
+        except Exception:
+            return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 class AdminBookingsListView(APIView):

@@ -22,7 +22,12 @@ export const driverService = {
     },
 
     submitKYC: async (payload) => {
-        const res = await api.post("/drivers/kyc/", payload);
+        const formData = new FormData();
+        Object.entries(payload.fields).forEach(([key, value]) => formData.append(key, value));
+        Object.entries(payload.files).forEach(([key, file]) => formData.append(key, file));
+        const res = await api.post("/drivers/kyc/", formData, {
+            headers: { "Content-Type": "multipart/form-data" }
+        });
         return res.data;
     },
 

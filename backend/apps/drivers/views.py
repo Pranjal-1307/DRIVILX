@@ -1,5 +1,11 @@
 from datetime import datetime, timedelta
+import os
+import uuid
+from pathlib import Path
 from bson import ObjectId
+from django.conf import settings
+from django.http import FileResponse
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -7,6 +13,63 @@ from rest_framework import status
 from database.mongodb import drivers_collection, bookings_collection, reviews_collection, notifications_collection
 from apps.authentication.services import decode_token
 from apps.bookings.services import create_user_notification
+
+
+KYC_DOCUMENT_TYPES = {"license_front", "license_back", "aadhaar_card", "address_proof", "driver_photo"}
+KYC_MAX_FILE_SIZE = 10 * 1024 * 1024
+KYC_FILE_TYPES = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}
+
+
+def kyc_private_root():
+    return Path(os.getenv("KYC_PRIVATE_STORAGE", settings.BASE_DIR / "private_uploads")).resolve()
+
+
+def kyc_file_signature(upload):
+    upload.seek(0)
+    header = upload.read(16)
+    upload.seek(0)
+    if header.startswith(b"%PDF-"):
+        return "application/pdf"
+    if header.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    return None
+
+
+def serialize_kyc(kyc):
+    result = dict(kyc or {})
+    result["documents"] = {
+        key: ({**meta, "uploaded": bool(meta.get("storage_key")), "name": meta.get("original_filename", meta.get("name", ""))}
+              if isinstance(meta, dict) else {"name": str(meta or ""), "uploaded": False, "status": "pending"})
+        for key, meta in (result.get("documents") or {}).items()
+    }
+    return result
+
+
+def mask_kyc_value(field, value):
+    text = str(value or "")
+    if not text:
+        return ""
+    if field == "aadhaar_number":
+        digits = "".join(character for character in text if character.isdigit())
+        return f"•••• •••• {digits[-4:]}" if digits else "••••"
+    if field == "pan_number":
+        return f"••••••{text[-4:]}" if len(text) > 4 else "••••"
+    return text
+
+
+def safe_document_history(document):
+    if not isinstance(document, dict) or not document.get("storage_key"):
+        return None
+    return {
+        "reference": document.get("storage_key"),
+        "filename": document.get("original_filename", ""),
+        "uploaded_at": document.get("uploaded_at"),
+        "file_size": document.get("file_size", 0),
+        "content_type": document.get("content_type", "application/octet-stream"),
+        "status": document.get("status", "pending")
+    }
 
 
 def get_authenticated_driver(request):
@@ -18,13 +81,12 @@ def get_authenticated_driver(request):
     payload = decode_token(token)
     if not payload:
         return None, "Invalid or expired token"
+    if payload.get("role") != "driver":
+        return None, "Driver authentication required"
 
     driver_id = payload.get("user_id")
     try:
         driver = drivers_collection.find_one({"_id": ObjectId(driver_id)})
-        if not driver:
-            # Fallback search by email if needed
-            driver = drivers_collection.find_one({"email": payload.get("email")})
         if not driver:
             return None, "Driver profile not found"
         return driver, None
@@ -161,27 +223,17 @@ class DriverStatusToggleView(APIView):
 
 
 class DriverKYCView(APIView):
+    parser_classes = [MultiPartParser, FormParser]
+
     def get(self, request):
         driver, error = get_authenticated_driver(request)
         if error:
             return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
 
         current_kyc_status = driver.get("kyc_status", "pending")
-        kyc_data = driver.get("kyc", {
-            "aadhaar_number": "",
-            "pan_number": "",
-            "license_number": driver.get("license_number", ""),
-            "license_expiry": "",
-            "status": current_kyc_status,
-            "submitted_at": "",
-            "documents": {
-                "license_front": {"name": "", "status": "pending", "uploaded": False},
-                "license_back": {"name": "", "status": "pending", "uploaded": False},
-                "aadhaar_card": {"name": "", "status": "pending", "uploaded": False},
-                "address_proof": {"name": "", "status": "pending", "uploaded": False},
-                "driver_photo": {"name": "", "status": "pending", "uploaded": False}
-            }
-        })
+        kyc_data = serialize_kyc(driver.get("kyc", {}))
+        kyc_data.setdefault("license_number", driver.get("license_number", ""))
+        kyc_data.setdefault("documents", {})
 
         return Response({
             "success": True,
@@ -195,41 +247,141 @@ class DriverKYCView(APIView):
             return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
 
         data = request.data
-        aadhaar = data.get("aadhaar_number", "")
-        pan = data.get("pan_number", "")
-        license_num = data.get("license_number", "")
-        license_exp = data.get("license_expiry", "")
-        documents = data.get("documents", {})
-
-        kyc_record = {
-            "aadhaar_number": aadhaar,
-            "pan_number": pan,
-            "license_number": license_num,
-            "license_expiry": license_exp,
-            "documents": documents,
-            "status": "under_review",
-            "submitted_at": datetime.utcnow().strftime("%d %b %Y, %I:%M %p"),
-            "updated_at": datetime.utcnow()
-        }
-
-        drivers_collection.update_one(
-            {"_id": driver["_id"]},
-            {
-                "$set": {
-                    "kyc": kyc_record,
-                    "kyc_status": "under_review",
-                    "license_number": license_num or driver.get("license_number", ""),
-                    "updated_at": datetime.utcnow()
+        old_kyc = driver.get("kyc", {}) or {}
+        now = datetime.utcnow()
+        fields = ("aadhaar_number", "pan_number", "license_number", "license_expiry")
+        kyc_record = dict(old_kyc)
+        kyc_record.setdefault("license_number", driver.get("license_number", ""))
+        for field in fields:
+            if field in data:
+                value = str(data.get(field, "")).strip()
+                if value:
+                    kyc_record[field] = value
+        documents = dict(old_kyc.get("documents") or {})
+        new_paths = []
+        root = kyc_private_root()
+        try:
+            uploads = []
+            for key in KYC_DOCUMENT_TYPES:
+                upload = request.FILES.get(key)
+                if not upload:
+                    continue
+                extension = Path(upload.name).suffix.lower()
+                actual_type = kyc_file_signature(upload)
+                if extension not in KYC_FILE_TYPES or actual_type != KYC_FILE_TYPES[extension]:
+                    return Response({"error": f"{key}: only valid PDF, JPEG, or PNG files are accepted."}, status=status.HTTP_400_BAD_REQUEST)
+                if upload.size <= 0 or upload.size > KYC_MAX_FILE_SIZE:
+                    return Response({"error": f"{key}: file must be between 1 byte and 10 MB."}, status=status.HTTP_400_BAD_REQUEST)
+                uploads.append((key, upload, extension, actual_type))
+            effective_fields = {field: (str(data.get(field, "")).strip() if field in data else str(kyc_record.get(field, "")).strip()) for field in fields}
+            effective_documents = {key for key, meta in documents.items() if isinstance(meta, dict) and meta.get("storage_key")} | {item[0] for item in uploads}
+            if any(not value for value in effective_fields.values()) or not KYC_DOCUMENT_TYPES.issubset(effective_documents):
+                return Response({"error": "Complete all four identity fields and upload each of the five required documents before submitting."}, status=status.HTTP_400_BAD_REQUEST)
+            for key, upload, extension, actual_type in uploads:
+                storage_key = f"{driver['_id']}/{uuid.uuid4().hex}{extension}"
+                destination = root / storage_key
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                new_paths.append(destination)
+                with destination.open("wb") as target:
+                    for chunk in upload.chunks():
+                        target.write(chunk)
+                documents[key] = {
+                    "id": storage_key,
+                    "storage_key": storage_key,
+                    "original_filename": os.path.basename(upload.name)[:255],
+                    "content_type": actual_type,
+                    "file_size": upload.size,
+                    "uploaded_at": now,
+                    "status": "pending",
+                    "uploaded": True
                 }
-            }
-        )
 
-        return Response({
-            "success": True,
-            "message": "KYC documents submitted successfully! Verification usually takes 2-4 hours.",
-            "kyc": kyc_record,
-            "status": "under_review"
-        })
+            changes = []
+            for field in fields:
+                old_value = old_kyc.get(field, driver.get("license_number", "") if field == "license_number" else None)
+                new_value = kyc_record.get(field)
+                if new_value != old_value:
+                    changes.append({"entity": "field", "key": field, "change": "added" if old_value in (None, "") else "changed",
+                                    "before": mask_kyc_value(field, old_value) if old_value not in (None, "") else None,
+                                    "after": mask_kyc_value(field, new_value) if new_value not in (None, "") else None})
+            for key in sorted(KYC_DOCUMENT_TYPES):
+                new_doc = documents.get(key)
+                old_doc = (old_kyc.get("documents") or {}).get(key)
+                if new_doc and new_doc.get("storage_key") and (not isinstance(old_doc, dict) or old_doc.get("storage_key") != new_doc.get("storage_key")):
+                    changes.append({"entity": "document", "key": key, "change": "replaced" if isinstance(old_doc, dict) and old_doc.get("storage_key") else "added",
+                                    "before": safe_document_history(old_doc), "after": safe_document_history(new_doc)})
+
+            if not changes:
+                return Response({"success": True, "message": "No KYC changes were detected.", "kyc": serialize_kyc(old_kyc), "status": driver.get("kyc_status", old_kyc.get("status", "pending"))})
+
+            # Any material change reopens admin review; no upload alone can preserve verified status.
+            for meta in documents.values():
+                if isinstance(meta, dict) and meta.get("storage_key"):
+                    meta["status"] = "pending"
+            submission_id = uuid.uuid4().hex
+            kyc_record["documents"] = documents
+            kyc_record["status"] = "under_review"
+            kyc_record["submitted_at"] = old_kyc.get("submitted_at") or now
+            kyc_record["updated_at"] = now
+            kyc_record["submission_id"] = submission_id
+            history_entry = {"submission_id": submission_id, "actor": "driver", "actor_id": str(driver["_id"]), "timestamp": now, "changes": changes}
+            update = {"kyc": kyc_record, "kyc_status": "under_review", "updated_at": now,
+                      "kyc_history": [*(driver.get("kyc_history") or []), history_entry]}
+            if kyc_record.get("license_number"):
+                update["license_number"] = kyc_record["license_number"]
+            result = drivers_collection.update_one({"_id": driver["_id"]}, {"$set": update})
+            if result.matched_count != 1:
+                raise RuntimeError("Driver record was not updated")
+        except Exception as exc:
+            for path in new_paths:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            return Response({"error": f"KYC upload could not be saved: {str(exc)}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        return Response({"success": True, "message": "KYC information saved and submitted for admin review.", "kyc": serialize_kyc(kyc_record), "status": "under_review"})
+
+
+class DriverKYCFileView(APIView):
+    """Serve private KYC files only to the owning driver or an authenticated admin."""
+    def get(self, request, document_id):
+        auth_header = request.headers.get("Authorization", "")
+        token = auth_header[7:] if auth_header.startswith("Bearer ") else ""
+        payload = decode_token(token) if token else None
+        if not payload:
+            return Response({"error": "Authentication required"}, status=status.HTTP_401_UNAUTHORIZED)
+        try:
+            driver_id, separator, file_part = document_id.partition("/")
+            if not separator or ".." in document_id:
+                return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            driver = drivers_collection.find_one({"_id": ObjectId(driver_id)})
+            if not driver:
+                return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            if payload.get("role") == "driver" and str(driver["_id"]) != payload.get("user_id"):
+                return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+            if payload.get("role") == "admin":
+                from database.mongodb import admins_collection
+                try:
+                    admin = admins_collection.find_one({"_id": ObjectId(payload.get("user_id"))})
+                except Exception:
+                    admin = None
+                if not admin:
+                    return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+            elif payload.get("role") != "driver":
+                return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+            metadata = next((meta for meta in (driver.get("kyc", {}).get("documents", {}) or {}).values() if meta.get("storage_key") == document_id), None)
+            if not metadata:
+                return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            path = (kyc_private_root() / file_part).resolve()
+            if kyc_private_root() / driver_id not in path.parents or not path.is_file():
+                return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
+            response = FileResponse(path.open("rb"), content_type=metadata.get("content_type", "application/octet-stream"))
+            response["Content-Disposition"] = f'attachment; filename="{os.path.basename(metadata.get("original_filename", "document"))}"'
+            response["X-Content-Type-Options"] = "nosniff"
+            return response
+        except Exception:
+            return Response({"error": "Document not found"}, status=status.HTTP_404_NOT_FOUND)
 
 
 class DriverRequestsView(APIView):
