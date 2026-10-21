@@ -2,8 +2,8 @@ import api from "./api";
 
 export const adminService = {
     // Analytics
-    getAnalytics: async () => {
-        const res = await api.get("/admin/analytics/");
+    getAnalytics: async (params = {}) => {
+        const res = await api.get("/admin/analytics/", { params });
         return res.data;
     },
 

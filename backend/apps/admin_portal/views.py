@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 import re
 from pathlib import Path
@@ -28,6 +28,23 @@ KYC_DOCUMENT_CATEGORIES = {
     "address_proof": "Address proof",
     "driver_photo": "Driver photo",
 }
+
+BOOKING_STATUS_GROUPS = {
+    "pending": ["pending_advance", "pending", "searching"],
+    "accepted": ["driver_assigned", "confirmed"],
+    "en_route": ["on_the_way", "arrived"],
+    "in_progress": ["in_progress", "started"],
+    "completed": ["completed"],
+    "declined": ["declined", "rejected"],
+    "cancelled": ["cancelled", "canceled"],
+}
+
+
+def booking_status_group(raw_status):
+    for group, statuses in BOOKING_STATUS_GROUPS.items():
+        if raw_status in statuses:
+            return group
+    return "other"
 
 
 def _mask_kyc_number(field, value):
@@ -94,119 +111,90 @@ class AdminAnalyticsView(APIView):
         if error:
             return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
 
-        # 1. Basic counts
         total_users = users_collection.count_documents({})
         total_drivers = drivers_collection.count_documents({})
         total_bookings = bookings_collection.count_documents({})
         pending_kyc = drivers_collection.count_documents({
             "kyc_status": {"$in": ["pending", "under_review", "submitted"]}
         })
-        active_bookings = bookings_collection.count_documents({
-            "status": {"$in": ["searching", "confirmed", "started", "arrived"]}
+        status_counts = {
+            group: bookings_collection.count_documents({"status": {"$in": raw_statuses}})
+            for group, raw_statuses in BOOKING_STATUS_GROUPS.items()
+        }
+        other_statuses = bookings_collection.count_documents({
+            "status": {"$nin": [value for values in BOOKING_STATUS_GROUPS.values() for value in values]}
         })
+        active_bookings = status_counts["accepted"] + status_counts["en_route"] + status_counts["in_progress"]
 
-        # Calculate revenue from bookings
-        completed_bookings = list(bookings_collection.find({"status": "completed"}))
+        completed = list(bookings_collection.find({"status": {"$in": BOOKING_STATUS_GROUPS["completed"]}}))
         total_gross_revenue = sum(
-            (b.get("fare", {}).get("total_fare") or b.get("total_fare") or 0)
-            for b in completed_bookings
+            (booking.get("fare", {}).get("total_fare") or booking.get("total_fare") or 0)
+            for booking in completed
         )
-        if total_gross_revenue == 0 and total_bookings > 0:
-            # Fallback calculate from all non-cancelled bookings
-            all_valid_bookings = list(bookings_collection.find({"status": {"$ne": "cancelled"}}))
-            total_gross_revenue = sum(
-                (b.get("fare", {}).get("total_fare") or b.get("total_fare") or 850)
-                for b in all_valid_bookings
-            )
 
-        platform_revenue = round(total_gross_revenue * 0.15, 2)
-        driver_payouts = round(total_gross_revenue * 0.85, 2)
+        now = datetime.utcnow()
+        try:
+            selected_year = int(request.query_params.get("year", now.year))
+            if selected_year < 2000 or selected_year > now.year + 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            return Response({"error": "Invalid analytics year."}, status=status.HTTP_400_BAD_REQUEST)
 
-        # 2. Monthly Bookings & Revenue trend (Current Year)
-        current_year = datetime.utcnow().year
         months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
         monthly_data = []
-
-        for month_idx in range(1, 13):
-            m_name = months[month_idx - 1]
-            # Aggregate bookings created in this month of current year
-            start_date = datetime(current_year, month_idx, 1)
-            if month_idx == 12:
-                end_date = datetime(current_year + 1, 1, 1)
-            else:
-                end_date = datetime(current_year, month_idx + 1, 1)
-
-            count = bookings_collection.count_documents({
-                "created_at": {"$gte": start_date, "$lt": end_date}
-            })
-            
-            # Aggregate revenue
-            month_bookings = list(bookings_collection.find({
-                "created_at": {"$gte": start_date, "$lt": end_date},
-                "status": {"$ne": "cancelled"}
-            }))
-            rev = sum((b.get("fare", {}).get("total_fare") or b.get("total_fare") or 0) for b in month_bookings)
-
-            # Driver enrollments this month
-            driver_enrolls = drivers_collection.count_documents({
-                "created_at": {"$gte": start_date, "$lt": end_date}
-            })
-            user_enrolls = users_collection.count_documents({
-                "created_at": {"$gte": start_date, "$lt": end_date}
-            })
-
+        yearly_data = {}
+        hourly_counts = [0] * 24
+        for month_idx, month_name in enumerate(months, start=1):
+            start_date = datetime(selected_year, month_idx, 1)
+            end_date = datetime(selected_year + 1, 1, 1) if month_idx == 12 else datetime(selected_year, month_idx + 1, 1)
+            month_bookings = list(bookings_collection.find({"created_at": {"$gte": start_date, "$lt": end_date}}))
+            month_revenue = sum(
+                (booking.get("fare", {}).get("total_fare") or booking.get("total_fare") or 0)
+                for booking in month_bookings if booking.get("status") == "completed"
+            )
             monthly_data.append({
-                "month": m_name,
-                "bookings": count,
-                "revenue": rev,
-                "platform_fee": round(rev * 0.15, 2),
-                "driver_enrollments": driver_enrolls,
-                "user_enrollments": user_enrolls
+                "month": month_name,
+                "bookings": len(month_bookings),
+                "revenue": month_revenue,
+                "platform_fee": round(month_revenue * 0.15, 2),
+                "driver_enrollments": drivers_collection.count_documents({"created_at": {"$gte": start_date, "$lt": end_date}}),
+                "user_enrollments": users_collection.count_documents({"created_at": {"$gte": start_date, "$lt": end_date}})
+            })
+            for booking in month_bookings:
+                created_at = booking.get("created_at")
+                if isinstance(created_at, datetime):
+                    hourly_counts[created_at.hour] += 1
+
+        for booking in bookings_collection.find({}, {"created_at": 1, "status": 1, "fare": 1, "total_fare": 1}):
+            created_at = booking.get("created_at")
+            if not isinstance(created_at, datetime):
+                continue
+            year_key = str(created_at.year)
+            entry = yearly_data.setdefault(year_key, {"bookings": 0, "revenue": 0})
+            entry["bookings"] += 1
+            if booking.get("status") == "completed":
+                entry["revenue"] += booking.get("fare", {}).get("total_fare") or booking.get("total_fare") or 0
+
+        total_hourly = sum(hourly_counts)
+        peak_hours = []
+        for label, start_hour, end_hour in [
+            ("Early Morning (4AM - 8AM)", 4, 8),
+            ("Morning Rush (8AM - 12PM)", 8, 12),
+            ("Afternoon (12PM - 5PM)", 12, 17),
+            ("Evening Prime (5PM - 10PM)", 17, 22),
+            ("Late Night (10PM - 4AM)", 22, 4),
+        ]:
+            count = sum(hourly_counts[start_hour:end_hour]) if start_hour < end_hour else sum(hourly_counts[start_hour:] + hourly_counts[:end_hour])
+            peak_hours.append({
+                "slot": label,
+                "count": count,
+                "percentage": round(count * 100 / total_hourly) if total_hourly else 0
             })
 
-        # Check if monthly_data is mostly empty, inject representative proportional distribution based on total counts
-        total_monthly_bookings_sum = sum(d["bookings"] for d in monthly_data)
-        if total_monthly_bookings_sum == 0 and total_bookings > 0:
-            distribution_weights = [0.05, 0.06, 0.08, 0.09, 0.11, 0.13, 0.15, 0.18, 0.08, 0.04, 0.02, 0.01]
-            for i, weight in enumerate(distribution_weights):
-                b_count = max(1, int(total_bookings * weight))
-                monthly_data[i]["bookings"] = b_count
-                monthly_data[i]["revenue"] = int(b_count * 950)
-                monthly_data[i]["platform_fee"] = int(b_count * 950 * 0.15)
-                monthly_data[i]["driver_enrollments"] = max(1, int(total_drivers * weight * 0.8))
-                monthly_data[i]["user_enrollments"] = max(2, int(total_users * weight * 0.9))
-
-        # 3. Peak Booking Trends
-        peak_hours = [
-            {"slot": "Early Morning (4AM - 8AM)", "percentage": 14, "count": int(total_bookings * 0.14), "icon": "Sunrise"},
-            {"slot": "Morning Rush (8AM - 12PM)", "percentage": 34, "count": int(total_bookings * 0.34), "icon": "Sun"},
-            {"slot": "Afternoon (12PM - 5PM)", "percentage": 22, "count": int(total_bookings * 0.22), "icon": "CloudSun"},
-            {"slot": "Evening Prime (5PM - 10PM)", "percentage": 24, "count": int(total_bookings * 0.24), "icon": "Sunset"},
-            {"slot": "Late Night (10PM - 4AM)", "percentage": 6, "count": int(total_bookings * 0.06), "icon": "Moon"}
-        ]
-
-        # 4. Booking status breakdown
-        status_counts = {
-            "completed": bookings_collection.count_documents({"status": "completed"}),
-            "confirmed": bookings_collection.count_documents({"status": "confirmed"}),
-            "searching": bookings_collection.count_documents({"status": "searching"}),
-            "cancelled": bookings_collection.count_documents({"status": "cancelled"}),
-            "started": bookings_collection.count_documents({"status": "started"}),
-        }
-
-        # 5. Top Cities
-        top_cities = [
-            {"city": "Mumbai", "bookings": int(total_bookings * 0.42) if total_bookings else 0, "share": 42},
-            {"city": "Pune", "bookings": int(total_bookings * 0.25) if total_bookings else 0, "share": 25},
-            {"city": "Delhi NCR", "bookings": int(total_bookings * 0.18) if total_bookings else 0, "share": 18},
-            {"city": "Bengaluru", "bookings": int(total_bookings * 0.15) if total_bookings else 0, "share": 15},
-        ]
-
-        # 6. Yearly Comparison
+        years = [str(selected_year - 2), str(selected_year - 1), str(selected_year)]
         yearly_comparison = [
-            {"year": str(current_year - 2), "bookings": max(120, int(total_bookings * 0.4)), "revenue": max(150000, int(total_gross_revenue * 0.35))},
-            {"year": str(current_year - 1), "bookings": max(310, int(total_bookings * 0.7)), "revenue": max(420000, int(total_gross_revenue * 0.65))},
-            {"year": str(current_year), "bookings": max(total_bookings, 480), "revenue": max(total_gross_revenue, 650000)}
+            {"year": year, **yearly_data.get(year, {"bookings": 0, "revenue": 0})}
+            for year in years
         ]
 
         return Response({
@@ -217,23 +205,26 @@ class AdminAnalyticsView(APIView):
                     "total_drivers": total_drivers,
                     "total_bookings": total_bookings,
                     "total_revenue": total_gross_revenue,
-                    "platform_revenue": platform_revenue,
-                    "driver_payouts": driver_payouts,
+                    "platform_revenue": round(total_gross_revenue * 0.15, 2),
+                    "driver_payouts": round(total_gross_revenue * 0.85, 2),
                     "pending_kyc": pending_kyc,
                     "active_bookings": active_bookings,
-                    "user_growth": "+18.4%",
-                    "driver_growth": "+12.2%",
-                    "booking_growth": "+24.8%",
-                    "revenue_growth": "+29.5%"
+                    "pending_bookings": status_counts["pending"],
+                    "accepted_bookings": status_counts["accepted"],
+                    "in_progress_bookings": status_counts["in_progress"],
+                    "completed_bookings": status_counts["completed"],
+                    "declined_bookings": status_counts["declined"],
+                    "cancelled_bookings": status_counts["cancelled"],
+                    "other_bookings": other_statuses,
+                    "bookings_with_driver_declines": bookings_collection.count_documents({"declined_by.0": {"$exists": True}}),
                 },
                 "monthly_data": monthly_data,
                 "yearly_comparison": yearly_comparison,
                 "peak_hours": peak_hours,
-                "status_distribution": status_counts,
-                "top_cities": top_cities
+                "status_distribution": {**status_counts, "other": other_statuses},
+                "top_cities": [],
             }
         })
-
 
 class AdminUsersListView(APIView):
     def get(self, request):
@@ -648,38 +639,53 @@ class AdminBookingsListView(APIView):
             return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
 
         status_filter = request.query_params.get("status", "all").strip().lower()
-        query = {}
-        if status_filter != "all":
-            query["status"] = status_filter
+        try:
+            page = max(1, int(request.query_params.get("page", 1)))
+            page_size = min(100, max(1, int(request.query_params.get("page_size", 25))))
+        except (TypeError, ValueError):
+            return Response({"error": "Page and page_size must be valid integers."}, status=status.HTTP_400_BAD_REQUEST)
 
-        bookings_cursor = bookings_collection.find(query).sort("created_at", -1).limit(100)
+        query = {}
+        if status_filter in BOOKING_STATUS_GROUPS and status_filter != "declined":
+            query["status"] = {"$in": BOOKING_STATUS_GROUPS[status_filter]}
+        elif status_filter == "declined":
+            query["$or"] = [
+                {"status": {"$in": BOOKING_STATUS_GROUPS["declined"]}},
+                {"declined_by.0": {"$exists": True}},
+            ]
+        elif status_filter != "all":
+            return Response({"error": "Unsupported booking status filter."}, status=status.HTTP_400_BAD_REQUEST)
+
+        total_count = bookings_collection.count_documents(query)
+        cursor = bookings_collection.find(query).sort("created_at", -1).skip((page - 1) * page_size).limit(page_size)
         bookings = []
 
-        for b in bookings_cursor:
-            b_id = str(b["_id"])
-            created_at_str = (
-                b.get("created_at").strftime("%d %b %Y, %I:%M %p")
-                if isinstance(b.get("created_at"), datetime)
-                else "Recently"
-            )
-
+        for booking in cursor:
+            booking_id = str(booking["_id"])
+            created_at = booking.get("created_at")
             bookings.append({
-                "id": b_id,
-                "booking_id": b.get("booking_id", f"DRV-{b_id[-6:].upper()}"),
-                "user_name": b.get("user_name") or b.get("user", {}).get("name", "Customer"),
-                "user_phone": b.get("user_phone") or b.get("user", {}).get("phone", "N/A"),
-                "driver_name": b.get("driver_name") or b.get("driver", {}).get("name", "Unassigned"),
-                "driver_phone": b.get("driver_phone") or b.get("driver", {}).get("phone", "N/A"),
-                "pickup_address": b.get("pickup", {}).get("address") if isinstance(b.get("pickup"), dict) else b.get("pickup_address", "N/A"),
-                "dropoff_address": b.get("dropoff", {}).get("address") if isinstance(b.get("dropoff"), dict) else b.get("dropoff_address", "N/A"),
-                "package_type": b.get("package_type", "Standard"),
-                "status": b.get("status", "completed"),
-                "total_fare": b.get("fare", {}).get("total_fare") or b.get("total_fare", 0),
-                "created_at": created_at_str
+                "id": booking_id,
+                "booking_id": booking.get("booking_id", f"DRV-{booking_id[-6:].upper()}"),
+                "user_name": booking.get("user_name") or booking.get("user", {}).get("name", "Customer"),
+                "user_phone": booking.get("user_phone") or booking.get("user", {}).get("phone", "N/A"),
+                "driver_name": booking.get("driver_name") or (booking.get("driver") or {}).get("name", "Unassigned"),
+                "driver_phone": booking.get("driver_phone") or (booking.get("driver") or {}).get("phone", "N/A"),
+                "pickup_address": booking.get("pickup", {}).get("address") if isinstance(booking.get("pickup"), dict) else booking.get("pickup", booking.get("pickup_address", "N/A")),
+                "dropoff_address": booking.get("destination", {}).get("address") if isinstance(booking.get("destination"), dict) else booking.get("destination", booking.get("dropoff_address", "N/A")),
+                "package_type": booking.get("trip_type_name") or booking.get("package_type", "Standard"),
+                "status": booking.get("status", "unknown"),
+                "status_group": booking_status_group(booking.get("status")),
+                "declined_by_count": len(booking.get("declined_by") or []),
+                "last_declined_at": booking.get("last_declined_at").isoformat() if isinstance(booking.get("last_declined_at"), datetime) else None,
+                "total_fare": (booking.get("fare") or {}).get("total_fare") or booking.get("total_fare", 0),
+                "created_at": created_at.strftime("%d %b %Y, %I:%M %p") if isinstance(created_at, datetime) else str(created_at or "Date unavailable")
             })
 
         return Response({
             "success": True,
-            "total_count": len(bookings),
+            "total_count": total_count,
+            "page": page,
+            "page_size": page_size,
+            "total_pages": (total_count + page_size - 1) // page_size,
             "bookings": bookings
         })

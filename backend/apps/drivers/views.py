@@ -562,7 +562,13 @@ class DriverRequestActionView(APIView):
                 })
 
             elif action == "decline":
-                # Record declined booking in driver doc
+                # Retain the pending booking for other drivers while recording this driver's decline on it.
+                decline_result = bookings_collection.update_one(
+                    {"_id": ObjectId(booking_id), "status": {"$in": ["searching", "pending_advance", "pending"]}, "declined_by": {"$ne": str(driver["_id"])}},
+                    {"$addToSet": {"declined_by": str(driver["_id"])}, "$set": {"last_declined_at": datetime.utcnow(), "updated_at": datetime.utcnow()}}
+                )
+                if decline_result.matched_count != 1:
+                    return Response({"error": "This booking is no longer open or was already declined by you."}, status=status.HTTP_409_CONFLICT)
                 drivers_collection.update_one(
                     {"_id": driver["_id"]},
                     {"$addToSet": {"declined_bookings": booking_id}}

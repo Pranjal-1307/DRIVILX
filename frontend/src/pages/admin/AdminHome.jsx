@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import Navbar from "../../components/navbar/Navbar";
 import { adminService } from "../../services/adminService";
 import {
@@ -41,6 +41,7 @@ const AdminHome = () => {
     const [activeTab, setActiveTab] = useState("overview"); // overview, kyc, users, drivers, bookings
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
+    const syncInFlight = useRef(false);
     const [toast, setToast] = useState(null);
 
     // Analytics State
@@ -61,6 +62,7 @@ const AdminHome = () => {
     // Bookings State
     const [bookings, setBookings] = useState([]);
     const [bookingStatusFilter, setBookingStatusFilter] = useState("all");
+    const [bookingPagination, setBookingPagination] = useState({ page: 1, page_size: 25, total_count: 0, total_pages: 1 });
 
     // Modals
     const [rejectModal, setRejectModal] = useState({ open: false, driverId: null, driverName: "", reason: "" });
@@ -119,24 +121,51 @@ const AdminHome = () => {
         setTimeout(() => setToast(null), 4000);
     };
 
-    // Fetch all Admin Data
-    const fetchAdminData = async () => {
-        setLoading(true);
+    // Fetch every dashboard source concurrently and keep the last good data for failed sources.
+    const fetchAdminData = async ({ manual = false, page = bookingPagination.page, statusFilter = bookingStatusFilter, year = selectedYear } = {}) => {
+        if (syncInFlight.current) return;
+        syncInFlight.current = true;
+        if (manual) setRefreshing(true);
+        else setLoading(true);
+        const labels = ["analytics", "users", "drivers", "bookings"];
+        let analyticsUpdated = false;
+        let bookingsUpdated = false;
         try {
-            const [analyticsRes, usersRes, driversRes, bookingsRes] = await Promise.all([
-                adminService.getAnalytics().catch(() => ({ analytics: null })),
-                adminService.getUsers().catch(() => ({ users: [] })),
-                adminService.getDrivers().catch(() => ({ drivers: [] })),
-                adminService.getBookings().catch(() => ({ bookings: [] }))
+            const results = await Promise.allSettled([
+                adminService.getAnalytics({ year }),
+                adminService.getUsers(),
+                adminService.getDrivers(),
+                adminService.getBookings({ status: statusFilter, page, page_size: bookingPagination.page_size })
             ]);
+            const failures = [];
+            const [analyticsResult, usersResult, driversResult, bookingsResult] = results;
+            if (analyticsResult.status === "fulfilled" && analyticsResult.value?.success && analyticsResult.value.analytics?.summary && Array.isArray(analyticsResult.value.analytics.monthly_data)) {
+                setAnalytics(analyticsResult.value.analytics);
+                analyticsUpdated = true;
+            } else failures.push(labels[0]);
+            if (usersResult.status === "fulfilled" && usersResult.value?.success === true && Array.isArray(usersResult.value?.users)) setUsers(usersResult.value.users);
+            else failures.push(labels[1]);
+            if (driversResult.status === "fulfilled" && driversResult.value?.success === true && Array.isArray(driversResult.value?.drivers)) setDrivers(driversResult.value.drivers);
+            else failures.push(labels[2]);
+            if (bookingsResult.status === "fulfilled" && bookingsResult.value?.success === true && Array.isArray(bookingsResult.value?.bookings)) {
+                setBookings(bookingsResult.value.bookings);
+                bookingsUpdated = true;
+                setBookingPagination({
+                    page: Number(bookingsResult.value.page) || page,
+                    page_size: Number(bookingsResult.value.page_size) || bookingPagination.page_size,
+                    total_count: Number(bookingsResult.value.total_count) || 0,
+                    total_pages: Math.max(1, Number(bookingsResult.value.total_pages) || 1)
+                });
+            } else failures.push(labels[3]);
 
-            if (analyticsRes?.analytics) setAnalytics(analyticsRes.analytics);
-            if (usersRes?.users) setUsers(usersRes.users);
-            if (driversRes?.drivers) setDrivers(driversRes.drivers);
-            if (bookingsRes?.bookings) setBookings(bookingsRes.bookings);
+            if (failures.length) showToast(`Could not refresh ${failures.join(", ")}. Showing the last available data.`, "error");
+            else if (manual) showToast("Dashboard synced with the latest database data.");
+            return { analyticsUpdated, bookingsUpdated };
         } catch (err) {
-            showToast("Failed to load some dashboard data", "error");
+            showToast(err.response?.data?.error || "Dashboard sync failed. Check your connection and try again.", "error");
+            return { analyticsUpdated, bookingsUpdated };
         } finally {
+            syncInFlight.current = false;
             setLoading(false);
             setRefreshing(false);
         }
@@ -146,9 +175,18 @@ const AdminHome = () => {
         fetchAdminData();
     }, []);
 
-    const handleManualRefresh = () => {
-        setRefreshing(true);
-        fetchAdminData();
+    const handleManualRefresh = () => fetchAdminData({ manual: true });
+
+    const handleBookingFilter = async (filter) => {
+        const result = await fetchAdminData({ manual: true, statusFilter: filter, page: 1 });
+        if (result?.bookingsUpdated) setBookingStatusFilter(filter);
+    };
+
+    const handleBookingPage = (page) => fetchAdminData({ manual: true, page });
+
+    const handleSelectYear = async (year) => {
+        const result = await fetchAdminData({ manual: true, year });
+        if (result?.analyticsUpdated) setSelectedYear(year);
     };
 
     // =========================================================================
@@ -290,10 +328,7 @@ const AdminHome = () => {
     }, [drivers]);
 
     const filteredBookings = useMemo(() => {
-        return bookings.filter(b => {
-            if (bookingStatusFilter !== "all" && b.status !== bookingStatusFilter) return false;
-            return true;
-        });
+        return bookings;
     }, [bookings, bookingStatusFilter]);
 
     // Max Monthly Bookings for chart bar percentage scaling
@@ -358,7 +393,7 @@ const AdminHome = () => {
                             { id: "kyc", label: `Driver KYC Review (${pendingKycDrivers.length})`, icon: ShieldCheck, badge: pendingKycDrivers.length > 0 },
                             { id: "users", label: `Manage Users (${users.length})`, icon: Users },
                             { id: "drivers", label: `Manage Drivers (${drivers.length})`, icon: Car },
-                            { id: "bookings", label: `All Bookings (${bookings.length})`, icon: CalendarCheck },
+                            { id: "bookings", label: `All Bookings (${analytics?.summary?.total_bookings ?? bookingPagination.total_count})`, icon: CalendarCheck },
                         ].map(tab => {
                             const Icon = tab.icon;
                             const isActive = activeTab === tab.id;
@@ -397,9 +432,6 @@ const AdminHome = () => {
                                     <div className="p-3 bg-amber-500/10 text-amber-400 rounded-xl">
                                         <Users size={22} />
                                     </div>
-                                    <span className="flex items-center text-xs font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                                        <TrendingUp size={12} className="mr-1" /> {analytics?.summary?.user_growth || "+18%"}
-                                    </span>
                                 </div>
                                 <h3 className="text-3xl font-black text-white mt-4">{analytics?.summary?.total_users ?? users.length}</h3>
                                 <p className="text-xs text-slate-400 mt-1 uppercase tracking-wider font-semibold">Total Registered Customers</p>
@@ -410,9 +442,6 @@ const AdminHome = () => {
                                     <div className="p-3 bg-sky-500/10 text-sky-400 rounded-xl">
                                         <Car size={22} />
                                     </div>
-                                    <span className="flex items-center text-xs font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                                        <TrendingUp size={12} className="mr-1" /> {analytics?.summary?.driver_growth || "+12%"}
-                                    </span>
                                 </div>
                                 <h3 className="text-3xl font-black text-white mt-4">{analytics?.summary?.total_drivers ?? drivers.length}</h3>
                                 <p className="text-xs text-slate-400 mt-1 uppercase tracking-wider font-semibold">Enrolled Drivers</p>
@@ -423,12 +452,9 @@ const AdminHome = () => {
                                     <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl">
                                         <CalendarCheck size={22} />
                                     </div>
-                                    <span className="flex items-center text-xs font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                                        <TrendingUp size={12} className="mr-1" /> {analytics?.summary?.booking_growth || "+25%"}
-                                    </span>
                                 </div>
-                                <h3 className="text-3xl font-black text-white mt-4">{analytics?.summary?.total_bookings ?? bookings.length}</h3>
-                                <p className="text-xs text-slate-400 mt-1 uppercase tracking-wider font-semibold">Total Bookings Completed</p>
+                                <h3 className="text-3xl font-black text-white mt-4">{analytics?.summary?.total_bookings ?? "—"}</h3>
+                                <p className="text-xs text-slate-400 mt-1 uppercase tracking-wider font-semibold">Total Rides</p>
                             </div>
 
                             <div className="rounded-2xl bg-slate-900 border border-slate-800 p-5 shadow-xl relative overflow-hidden group hover:border-emerald-500/40 transition-all">
@@ -436,9 +462,6 @@ const AdminHome = () => {
                                     <div className="p-3 bg-emerald-500/10 text-emerald-400 rounded-xl">
                                         <IndianRupee size={22} />
                                     </div>
-                                    <span className="flex items-center text-xs font-semibold text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded-full">
-                                        <TrendingUp size={12} className="mr-1" /> {analytics?.summary?.revenue_growth || "+30%"}
-                                    </span>
                                 </div>
                                 <h3 className="text-3xl font-black text-emerald-400 mt-4">
                                     ₹{Number(analytics?.summary?.total_revenue || 0).toLocaleString("en-IN")}
@@ -446,6 +469,24 @@ const AdminHome = () => {
                                 <p className="text-xs text-slate-400 mt-1 uppercase tracking-wider font-semibold">Gross Booking Value</p>
                             </div>
                         </div>
+
+                        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+                            {[
+                                ["Pending", "pending", "text-amber-300"],
+                                ["Accepted", "accepted", "text-sky-300"],
+                                ["En Route / Arrived", "en_route", "text-cyan-300"],
+                                ["In Progress", "in_progress", "text-indigo-300"],
+                                ["Completed", "completed", "text-emerald-300"],
+                                ["Declined / Rejected", "declined", "text-rose-300"],
+                                ["Cancelled", "cancelled", "text-slate-300"],
+                            ].map(([label, key, color]) => (
+                                <div key={key} className="rounded-xl bg-slate-900 border border-slate-800 p-4">
+                                    <p className={`text-2xl font-black ${color}`}>{analytics?.status_distribution?.[key] ?? "—"}</p>
+                                    <p className="text-[10px] text-slate-400 mt-1 uppercase tracking-wider">{label}</p>
+                                </div>
+                            ))}
+                        </div>
+                        <p className="-mt-6 text-xs text-slate-500">Driver declines recorded: {analytics?.summary?.bookings_with_driver_declines ?? 0} bookings. These remain pending for other drivers unless the ride status changes.</p>
 
                         {/* Revenue Share & Commission Engine */}
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
@@ -477,9 +518,9 @@ const AdminHome = () => {
                                     <Clock size={18} className="text-emerald-400" />
                                 </div>
                                 <p className="text-2xl sm:text-3xl font-black text-emerald-400 mt-3">
-                                    {analytics?.summary?.active_bookings ?? 0} In Progress
+                                    {analytics?.summary?.active_bookings ?? 0}
                                 </p>
-                                <p className="text-xs text-slate-400 mt-2">Current live rides ongoing across all operating regions</p>
+                                <p className="text-xs text-slate-400 mt-2">Accepted and in-progress rides across all regions</p>
                             </div>
                         </div>
 
@@ -498,7 +539,8 @@ const AdminHome = () => {
                                         {[new Date().getFullYear(), new Date().getFullYear() - 1].map(yr => (
                                             <button
                                                 key={yr}
-                                                onClick={() => setSelectedYear(yr)}
+                                                onClick={() => handleSelectYear(yr)}
+                                                disabled={refreshing}
                                                 className={`px-3 py-1 text-xs font-semibold rounded-lg transition-all ${
                                                     selectedYear === yr ? "bg-amber-400 text-slate-950 font-bold shadow" : "text-slate-400 hover:text-white"
                                                 }`}
@@ -512,7 +554,9 @@ const AdminHome = () => {
                                 {/* Custom Bar Visualization */}
                                 <div className="grid grid-cols-6 sm:grid-cols-12 gap-2 sm:gap-3 items-end h-56 pt-8 pb-2 border-b border-slate-800">
                                     {(analytics?.monthly_data || []).map((item) => {
-                                        const heightPercent = Math.min(100, Math.max(12, Math.round((item.bookings / maxMonthlyBookings) * 100)));
+                                        const heightPercent = item.bookings > 0
+                                            ? Math.min(100, Math.max(12, Math.round((item.bookings / maxMonthlyBookings) * 100)))
+                                            : 0;
                                         return (
                                             <div key={item.month} className="flex flex-col items-center h-full justify-end group relative">
                                                 {/* Tooltip on hover */}
@@ -538,7 +582,7 @@ const AdminHome = () => {
                                     <span className="flex items-center gap-2">
                                         <span className="w-3 h-3 rounded bg-amber-400" /> Booking Volume
                                     </span>
-                                    <span>Average Monthly Growth: <strong className="text-emerald-400">+22.4%</strong></span>
+                                    <span>{selectedYear} · {(analytics?.monthly_data || []).reduce((sum, month) => sum + (month.bookings || 0), 0)} rides recorded</span>
                                 </div>
                             </div>
 
@@ -621,23 +665,18 @@ const AdminHome = () => {
                                     <p className="text-xs text-slate-400 mb-5">Major metro markets contribution</p>
 
                                     <div className="grid grid-cols-2 gap-3">
-                                        {(analytics?.top_cities || [
-                                            { city: "Mumbai", share: 42 },
-                                            { city: "Pune", share: 25 },
-                                            { city: "Delhi NCR", share: 18 },
-                                            { city: "Bengaluru", share: 15 }
-                                        ]).map(city => (
+                                        {(analytics?.top_cities || []).length ? analytics.top_cities.map(city => (
                                             <div key={city.city} className="p-4 bg-slate-800/40 rounded-xl border border-slate-800 text-center">
                                                 <p className="text-2xl font-black text-amber-400">{city.share}%</p>
                                                 <p className="text-xs font-bold text-slate-300 mt-1">{city.city}</p>
                                             </div>
-                                        ))}
+                                        )) : <p className="col-span-2 text-center text-sm text-slate-500 py-8">Location data is not available for existing bookings.</p>}
                                     </div>
                                 </div>
 
                                 <div className="mt-6 pt-4 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400">
-                                    <span>Highest Demand Hub: <strong className="text-amber-400">Mumbai MMR</strong></span>
-                                    <span>Fleet Utilization: <strong className="text-emerald-400">89.2%</strong></span>
+                                    <span>Registered users: <strong className="text-amber-400">{analytics?.summary?.total_users ?? 0}</strong></span>
+                                    <span>Drivers: <strong className="text-emerald-400">{analytics?.summary?.total_drivers ?? 0}</strong></span>
                                 </div>
                             </div>
                         </div>
@@ -1056,17 +1095,18 @@ const AdminHome = () => {
                                 <p className="text-xs text-slate-400 mt-1">Live tracking of all user driver reservations</p>
                             </div>
                             <div className="flex items-center gap-2">
-                                {["all", "completed", "confirmed", "searching", "cancelled"].map(st => (
+                                {["all", "pending", "accepted", "en_route", "in_progress", "completed", "declined", "cancelled"].map(st => (
                                     <button
                                         key={st}
-                                        onClick={() => setBookingStatusFilter(st)}
+                                        onClick={() => handleBookingFilter(st)}
+                                        disabled={refreshing}
                                         className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition-all ${
                                             bookingStatusFilter === st
                                                 ? "bg-amber-400 text-slate-950 font-bold"
                                                 : "bg-slate-800 text-slate-300 hover:bg-slate-700"
                                         }`}
                                     >
-                                        {st}
+                                        {st === "in_progress" ? "In Progress" : st === "en_route" ? "En Route / Arrived" : st === "declined" ? "Declined Activity" : st}
                                     </button>
                                 ))}
                             </div>
@@ -1089,15 +1129,19 @@ const AdminHome = () => {
                                                 <p className="text-xs text-slate-400 mt-1">{b.created_at}</p>
                                             </div>
                                             <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase tracking-wider ${
-                                                b.status === "completed"
+                                                b.status_group === "completed"
                                                     ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/30"
-                                                    : b.status === "confirmed"
+                                                    : b.status_group === "accepted"
                                                     ? "bg-sky-500/10 text-sky-400 border border-sky-500/30"
-                                                    : b.status === "cancelled"
+                                                    : b.status_group === "en_route"
+                                                    ? "bg-cyan-500/10 text-cyan-300 border border-cyan-500/30"
+                                                    : b.status_group === "cancelled"
                                                     ? "bg-rose-500/10 text-rose-400 border border-rose-500/30"
+                                                    : b.status_group === "declined"
+                                                    ? "bg-rose-500/10 text-rose-300 border border-rose-500/30"
                                                     : "bg-amber-500/10 text-amber-400 border border-amber-500/30"
                                             }`}>
-                                                {b.status}
+                                                {b.status_group === "accepted" ? "Accepted" : b.status === "arrived" ? "Driver Arrived" : b.status === "on_the_way" ? "Driver En Route" : b.status_group === "in_progress" ? "In Progress" : b.status_group === "pending" ? "Pending" : b.status.replaceAll("_", " ")}
                                             </span>
                                         </div>
 
@@ -1118,6 +1162,10 @@ const AdminHome = () => {
                                             </div>
                                         </div>
 
+                                        {b.declined_by_count > 0 && (
+                                            <p className="text-xs text-amber-300">Declined by {b.declined_by_count} driver{b.declined_by_count === 1 ? "" : "s"}; still open for other drivers.</p>
+                                        )}
+
                                         <div className="flex items-center justify-between pt-3 border-t border-slate-800 text-xs">
                                             <span className="text-slate-400">Package: <strong className="text-slate-200">{b.package_type}</strong></span>
                                             <span className="text-base font-black text-emerald-400">₹{b.total_fare}</span>
@@ -1126,6 +1174,15 @@ const AdminHome = () => {
                                 ))
                             )}
                         </div>
+                        {bookingPagination.total_pages > 1 && (
+                            <div className="flex items-center justify-between rounded-xl bg-slate-900 border border-slate-800 px-4 py-3">
+                                <span className="text-xs text-slate-400">Page {bookingPagination.page} of {bookingPagination.total_pages} · {bookingPagination.total_count} rides</span>
+                                <div className="flex gap-2">
+                                    <button onClick={() => handleBookingPage(bookingPagination.page - 1)} disabled={refreshing || bookingPagination.page <= 1} className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-200 text-xs disabled:opacity-40">Previous</button>
+                                    <button onClick={() => handleBookingPage(bookingPagination.page + 1)} disabled={refreshing || bookingPagination.page >= bookingPagination.total_pages} className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-200 text-xs disabled:opacity-40">Next</button>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 )}
             </main>
