@@ -21,6 +21,11 @@ export const bookingService = {
         return res.data;
     },
 
+    cancelBooking: async (bookingId) => {
+        const res = await api.post(`/bookings/${bookingId}/update-status/`, { status: "cancelled" });
+        return res.data;
+    },
+
     payAdvance: async (bookingId, paymentData = {}) => {
         const res = await api.post(`/bookings/${bookingId}/pay-advance/`, paymentData);
         return res.data;

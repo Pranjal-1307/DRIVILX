@@ -15,7 +15,6 @@ import {
     CheckCircle2,
     Calendar,
     Sparkles,
-    Filter,
     ShieldAlert,
     ShieldCheck
 } from "lucide-react";
@@ -24,7 +23,6 @@ import { driverService } from "../../services/driverService";
 const DriverRequestsModal = ({ isOpen, onClose, driverCity, onRequestAccepted }) => {
     const [requests, setRequests] = useState([]);
     const [loading, setLoading] = useState(false);
-    const [selectedCity, setSelectedCity] = useState(driverCity || "All");
     const [actionLoadingId, setActionLoadingId] = useState(null);
     const [statusMsg, setStatusMsg] = useState("");
     const [errorMsg, setErrorMsg] = useState("");
@@ -32,19 +30,17 @@ const DriverRequestsModal = ({ isOpen, onClose, driverCity, onRequestAccepted })
     const [kycApproved, setKycApproved] = useState(true);
     const [kycNotice, setKycNotice] = useState("");
 
-    const cities = ["All", "Mumbai", "Pune", "Delhi NCR", "Bangalore", "Hyderabad", "Chennai", "Ahmedabad"];
 
     useEffect(() => {
         if (!isOpen) return;
         fetchRequests();
-    }, [isOpen, selectedCity]);
+    }, [isOpen]);
 
     const fetchRequests = async () => {
         setLoading(true);
         setErrorMsg("");
         try {
-            const cityParam = selectedCity === "All" ? "" : selectedCity;
-            const res = await driverService.getRequests(cityParam);
+            const res = await driverService.getRequests();
             if (res.success) {
                 setRequests(res.requests || []);
                 setKycApproved(res.kyc_approved !== false);
@@ -147,25 +143,7 @@ const DriverRequestsModal = ({ isOpen, onClose, driverCity, onRequestAccepted })
                     </div>
                 )}
 
-                {/* City Filter Tabs */}
-                <div className="px-6 py-3 bg-gray-900/60 border-b border-gray-800 flex items-center gap-2 overflow-x-auto no-scrollbar">
-                    <span className="text-xs font-semibold text-gray-400 flex items-center gap-1 shrink-0 mr-1">
-                        <Filter size={13} /> City:
-                    </span>
-                    {cities.map((c) => (
-                        <button
-                            key={c}
-                            onClick={() => setSelectedCity(c)}
-                            className={`px-3 py-1 rounded-xl text-xs font-semibold shrink-0 transition ${
-                                selectedCity === c
-                                    ? "bg-yellow-400 text-black font-bold"
-                                    : "bg-gray-800 text-gray-400 hover:text-white"
-                            }`}
-                        >
-                            {c}
-                        </button>
-                    ))}
-                </div>
+                <div className="border-b border-gray-800 bg-gray-900/60 px-6 py-3 text-xs text-gray-400">Pickup city: <strong className="text-white">{driverCity || "Set your city in KYC"}</strong></div>
 
                 {/* Body Content */}
                 <div className="p-6 max-h-[70vh] overflow-y-auto space-y-4">
@@ -224,7 +202,7 @@ const DriverRequestsModal = ({ isOpen, onClose, driverCity, onRequestAccepted })
                                                     <span className="px-2.5 py-0.5 rounded-lg bg-gray-800 text-gray-300 text-xs font-medium flex items-center gap-1">
                                                         <Car size={13} /> {req.vehicle_type}
                                                     </span>
-                                                    <span className="text-xs text-gray-500 flex items-center gap-1">
+                                                            <span className="text-xs text-gray-500 flex items-center gap-1">
                                                         <Calendar size={13} /> {req.booking_date} • {req.booking_time}
                                                     </span>
                                                 </div>
@@ -260,7 +238,7 @@ const DriverRequestsModal = ({ isOpen, onClose, driverCity, onRequestAccepted })
                                                 <div className="text-left md:text-right">
                                                     <p className="text-xs text-gray-400 font-semibold">YOUR EARNING</p>
                                                     <p className="text-2xl font-black text-yellow-400">₹{req.driver_earning}</p>
-                                                    <p className="text-xs text-gray-500">Trip Fare: ₹{req.estimated_fare}</p>
+                                                    <p className="text-xs text-gray-500">Trip Fare: ₹{req.estimated_fare} · your rate ₹{req.rate_per_km}/km</p>
                                                 </div>
 
                                                 <div className="flex items-center gap-2">

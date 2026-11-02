@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { driverService } from "../../services/driverService";
 import { useAuth } from "../../context/AuthContext";
+import LocationSearch from "../common/LocationSearch";
 
 const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
     const { user, login } = useAuth();
@@ -25,13 +26,12 @@ const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
     const [errorMsg, setErrorMsg] = useState("");
 
     const carOptions = ["Manual", "Automatic", "Sedan", "SUV", "Luxury Sedan", "Electric"];
-    const cityOptions = ["Mumbai", "Pune", "Delhi NCR", "Bangalore", "Hyderabad", "Chennai", "Ahmedabad"];
 
     const [formData, setFormData] = useState({
         name: "",
         email: "",
         phone: "",
-        city: "Mumbai",
+        city: "",
         address: "",
         experience_years: 5,
         car_experience: ["Manual", "Automatic", "Sedan"],
@@ -56,7 +56,7 @@ const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
                     name: p.name || user?.name || "",
                     email: p.email || user?.email || "",
                     phone: p.phone || "",
-                    city: p.city || "Mumbai",
+                    city: p.city || "",
                     address: p.address || "",
                     experience_years: p.experience_years || 5,
                     car_experience: p.car_experience || ["Manual", "Automatic"],
@@ -193,20 +193,7 @@ const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
                                 />
                             </div>
 
-                            <div>
-                                <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
-                                    Operating City
-                                </label>
-                                <select
-                                    value={formData.city}
-                                    onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                                    className="w-full px-4 py-2.5 bg-gray-900 border border-gray-700 rounded-xl text-white text-sm focus:outline-none focus:border-yellow-400"
-                                >
-                                    {cityOptions.map((c) => (
-                                        <option key={c} value={c}>{c}</option>
-                                    ))}
-                                </select>
-                            </div>
+                            <LocationSearch label="Operating city" value={formData.city ? {address:formData.city} : null} onSelect={place => setFormData(prev => ({...prev, city:place?.city || place?.address?.split(",").slice(-2,-1)[0]?.trim() || ""}))} placeholder="Search city in India" />
 
                             <div>
                                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">

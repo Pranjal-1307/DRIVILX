@@ -31,7 +31,7 @@ KYC_DOCUMENT_CATEGORIES = {
 
 BOOKING_STATUS_GROUPS = {
     "pending": ["pending_advance", "pending", "searching"],
-    "accepted": ["driver_assigned", "confirmed"],
+    "accepted": ["awaiting_advance_payment", "driver_assigned", "confirmed"],
     "en_route": ["on_the_way", "arrived"],
     "in_progress": ["in_progress", "started"],
     "completed": ["completed"],
@@ -268,7 +268,7 @@ class AdminUsersListView(APIView):
                 "name": u.get("name", "Unnamed User"),
                 "email": u.get("email", ""),
                 "phone": u.get("phone", "N/A"),
-                "city": u.get("city", "Mumbai"),
+                "city": u.get("city", ""),
                 "address": u.get("address", ""),
                 "emergency_contact": u.get("emergency_contact", ""),
                 "preferred_car_type": u.get("preferred_car_type", "Manual"),
@@ -392,7 +392,9 @@ class AdminDriversListView(APIView):
                 "name": d.get("name", "Unnamed Driver"),
                 "email": d.get("email", ""),
                 "phone": d.get("phone", "N/A"),
-                "city": d.get("city", "Mumbai"),
+                "city": d.get("city", ""),
+                "fare_per_km": d.get("fare_per_km", {}),
+                "vehicle_type": d.get("vehicle_type", d.get("car_type", "")),
                 "address": d.get("address", ""),
                 "status": d.get("status", "available"),
                 "is_suspended": d.get("is_suspended", False),
@@ -662,11 +664,13 @@ class AdminBookingsListView(APIView):
 
         for booking in cursor:
             booking_id = str(booking["_id"])
+            booking_user = users_collection.find_one({"_id": ObjectId(booking["user_id"])}) if ObjectId.is_valid(str(booking.get("user_id", ""))) else None
             created_at = booking.get("created_at")
             bookings.append({
                 "id": booking_id,
                 "booking_id": booking.get("booking_id", f"DRV-{booking_id[-6:].upper()}"),
                 "user_name": booking.get("user_name") or booking.get("user", {}).get("name", "Customer"),
+                "user_city": (booking_user or {}).get("city", ""),
                 "user_phone": booking.get("user_phone") or booking.get("user", {}).get("phone", "N/A"),
                 "driver_name": booking.get("driver_name") or (booking.get("driver") or {}).get("name", "Unassigned"),
                 "driver_phone": booking.get("driver_phone") or (booking.get("driver") or {}).get("phone", "N/A"),
@@ -678,6 +682,14 @@ class AdminBookingsListView(APIView):
                 "declined_by_count": len(booking.get("declined_by") or []),
                 "last_declined_at": booking.get("last_declined_at").isoformat() if isinstance(booking.get("last_declined_at"), datetime) else None,
                 "total_fare": (booking.get("fare") or {}).get("total_fare") or booking.get("total_fare", 0),
+                "pickup_city": booking.get("pickup_city", ""),
+                "pickup_coords": booking.get("pickup_coords"),
+                "dest_coords": booking.get("dest_coords"),
+                "route_geometry": booking.get("route_geometry"),
+                "distance_km": (booking.get("fare") or {}).get("distance_km", 0),
+                "duration_mins": (booking.get("fare") or {}).get("duration_mins", 0),
+                "rate_per_km": booking.get("rate_per_km", (booking.get("fare") or {}).get("rate_per_km")),
+                "vehicle_type": booking.get("vehicle_type", ""),
                 "created_at": created_at.strftime("%d %b %Y, %I:%M %p") if isinstance(created_at, datetime) else str(created_at or "Date unavailable")
             })
 

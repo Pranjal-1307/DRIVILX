@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Navbar from "../../components/navbar/Navbar";
 import { useAuth } from "../../context/AuthContext";
 import {
@@ -29,6 +29,7 @@ import DriverActiveTripModal from "../../components/driver/DriverActiveTripModal
 import DriverHistoryModal from "../../components/driver/DriverHistoryModal";
 import DriverEarningsModal from "../../components/driver/DriverEarningsModal";
 import { driverService } from "../../services/driverService";
+import DriverFareRates from "../../components/driver/DriverFareRates";
 
 const DriverHome = () => {
     const { user } = useAuth();
@@ -40,6 +41,7 @@ const DriverHome = () => {
     const [isActiveTripOpen, setIsActiveTripOpen] = useState(false);
     const [isHistoryOpen, setIsHistoryOpen] = useState(false);
     const [isEarningsOpen, setIsEarningsOpen] = useState(false);
+    const [isFareRatesOpen, setIsFareRatesOpen] = useState(false);
 
     // Dynamic state
     const [driverProfile, setDriverProfile] = useState(null);
@@ -55,6 +57,7 @@ const DriverHome = () => {
     });
     const [togglingStatus, setTogglingStatus] = useState(false);
     const [toastMessage, setToastMessage] = useState("");
+    const knownRequestIds = useRef(null);
 
     useEffect(() => {
         loadDashboardData();
@@ -89,6 +92,12 @@ const DriverHome = () => {
             // Pending requests count
             const reqRes = await driverService.getRequests();
             if (reqRes.success && reqRes.requests) {
+                const currentIds = new Set(reqRes.requests.map(request => request.id));
+                if (knownRequestIds.current) {
+                    const hasNewRequest = [...currentIds].some(id => !knownRequestIds.current.has(id));
+                    if (hasNewRequest) showToast("New ride request in your city. Open Booking Requests to accept or decline.");
+                }
+                knownRequestIds.current = currentIds;
                 setPendingRequestsCount(reqRes.requests.length);
                 setStats(prev => ({ ...prev, requestsCount: reqRes.requests.length }));
             }
@@ -152,7 +161,7 @@ const DriverHome = () => {
                                 </div>
                                 <span className="text-xs text-gray-400 font-semibold flex items-center gap-1 bg-gray-800/80 px-2.5 py-1 rounded-full border border-gray-700">
                                     <MapPin size={12} className="text-yellow-400" />
-                                    {driverProfile?.city || user?.city || "Mumbai"} Zone
+                                    {driverProfile?.city || user?.city || "City not set"} Zone
                                 </span>
                             </div>
 
@@ -374,7 +383,7 @@ const DriverHome = () => {
                         </div>
                         <p className="text-xs text-gray-400 font-semibold mt-4">City Booking Requests</p>
                         <h2 className="text-3xl font-black text-white mt-1">{stats.requestsCount}</h2>
-                        <p className="text-xs text-gray-500 mt-1">Available in {driverProfile?.city || "Mumbai"}</p>
+                        <p className="text-xs text-gray-500 mt-1">Available in {driverProfile?.city || "your registered city"}</p>
                     </div>
 
                     {/* Completed Trips */}
@@ -445,7 +454,10 @@ const DriverHome = () => {
                         </h2>
                     </div>
 
-                    <div className="grid md:grid-cols-3 gap-5">
+                    <div className="grid md:grid-cols-4 gap-5">
+                        <button onClick={() => setIsFareRatesOpen(true)} className="p-6 rounded-3xl bg-[#151720] border border-gray-800 hover:border-yellow-400/40 text-left">
+                            <div className="w-12 h-12 rounded-2xl bg-yellow-400/10 text-yellow-400 flex items-center justify-center"><IndianRupee size={24}/></div><h3 className="text-lg font-black text-white mt-5">Manage fares</h3><p className="text-gray-400 text-xs mt-2">Set per-kilometer prices for all four vehicle categories.</p><span className="mt-4 block text-xs font-bold text-yellow-300">Edit your prices →</span>
+                        </button>
                         {/* Tool 1 */}
                         <div
                             onClick={() => setIsRequestsOpen(true)}
@@ -534,7 +546,7 @@ const DriverHome = () => {
             <DriverRequestsModal
                 isOpen={isRequestsOpen}
                 onClose={() => setIsRequestsOpen(false)}
-                driverCity={driverProfile?.city || "Mumbai"}
+                driverCity={driverProfile?.city || "City not set"}
                 onRequestAccepted={(bookingId) => {
                     showToast("Booking accepted! Loading live ride...");
                     loadDashboardData();
@@ -564,6 +576,7 @@ const DriverHome = () => {
                     loadDashboardData();
                 }}
             />
+            <DriverFareRates isOpen={isFareRatesOpen} onClose={() => setIsFareRatesOpen(false)} />
         </div>
     );
 };

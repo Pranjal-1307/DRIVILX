@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { userService } from "../../services/userService";
 import { useAuth } from "../../context/AuthContext";
+import LocationSearch from "../common/LocationSearch";
 
 const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
     const { user, login } = useAuth();
@@ -27,7 +28,7 @@ const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
         email: "",
         phone: "",
         address: "",
-        city: "Mumbai",
+        city: "",
         emergency_contact: "",
         preferred_car_type: "Manual",
         avatar: ""
@@ -49,7 +50,7 @@ const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
                     email: res.profile.email || user?.email || "",
                     phone: res.profile.phone || "",
                     address: res.profile.address || "",
-                    city: res.profile.city || "Mumbai",
+                    city: res.profile.city || "",
                     emergency_contact: res.profile.emergency_contact || "",
                     preferred_car_type: res.profile.preferred_car_type || "Manual",
                     avatar: res.profile.avatar || ""
@@ -214,17 +215,7 @@ const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
                             </div>
 
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                <div>
-                                    <label className="text-xs font-semibold text-zinc-400 block mb-1">
-                                        CITY
-                                    </label>
-                                    <input
-                                        type="text"
-                                        value={formData.city}
-                                        onChange={(e) => setFormData({ ...formData, city: e.target.value })}
-                                        className="w-full px-3.5 py-2.5 bg-zinc-900 border border-zinc-800 rounded-xl text-white text-sm focus:outline-none focus:border-yellow-400 transition"
-                                    />
-                                </div>
+                                <LocationSearch label="CITY" value={formData.city ? {address: formData.city} : null} onSelect={place => setFormData(prev => ({...prev, city: place?.city || place?.address?.split(",").slice(-2,-1)[0]?.trim() || ""}))} placeholder="Search your city in India" />
 
                                 <div>
                                     <label className="text-xs font-semibold text-zinc-400 flex items-center gap-1.5 mb-1">

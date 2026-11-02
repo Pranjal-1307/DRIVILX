@@ -30,15 +30,12 @@ def is_usable_start_otp(value):
     return isinstance(value, str) and len(value) == 6 and value.isdigit()
 
 
-def calculate_estimated_fare(pickup, destination, trip_type="city_ride", vehicle_type="Sedan", distance_km=None, duration_mins=None):
+def calculate_estimated_fare(pickup, destination, trip_type="city_ride", vehicle_type="Sedan", distance_km=None, duration_mins=None, driver_rate=None):
     """
     Calculate dynamic fare based on distance, duration, trip type and vehicle type.
     """
-    # If distance is not provided, estimate a reasonable distance based on string length hash or default
     if not distance_km or distance_km <= 0:
-        # Pseudo-deterministic distance based on names
-        seed_val = abs(hash(pickup + destination)) % 35 + 5
-        distance_km = round(float(seed_val), 1)
+        raise ValueError("A real routed distance is required to calculate a fare.")
     
     if not duration_mins or duration_mins <= 0:
         duration_mins = max(15, int(distance_km * 2.8))
@@ -47,7 +44,8 @@ def calculate_estimated_fare(pickup, destination, trip_type="city_ride", vehicle
     vehicle_multiplier = VEHICLE_MULTIPLIERS.get(vehicle_type, 1.15)
 
     base_price = rate_info["base"]
-    distance_cost = distance_km * rate_info["per_km"]
+    per_km_rate = float(driver_rate) if driver_rate is not None else rate_info["per_km"]
+    distance_cost = distance_km * per_km_rate
     time_cost = (duration_mins / 60.0) * 50.0  # ₹50 per hour
 
     subtotal = (base_price + distance_cost + time_cost) * vehicle_multiplier
@@ -64,6 +62,7 @@ def calculate_estimated_fare(pickup, destination, trip_type="city_ride", vehicle
         "trip_type": trip_type,
         "trip_type_name": rate_info["name"],
         "vehicle_type": vehicle_type,
+        "rate_per_km": per_km_rate,
         "base_price": round(base_price),
         "distance_cost": round(distance_cost),
         "tax": round(tax),

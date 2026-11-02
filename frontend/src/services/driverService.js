@@ -1,6 +1,8 @@
 import api from "./api";
 
 export const driverService = {
+    getFareRates: async () => (await api.get("/drivers/fare-rates/")).data,
+    updateFareRates: async (fare_per_km) => (await api.put("/drivers/fare-rates/", { fare_per_km })).data,
     getProfile: async () => {
         const res = await api.get("/drivers/profile/");
         return res.data;

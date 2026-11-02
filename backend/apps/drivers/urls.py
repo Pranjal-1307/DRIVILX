@@ -8,10 +8,12 @@ from .views import (
     DriverRequestActionView,
     DriverActiveTripView,
     DriverTripHistoryView,
-    DriverEarningsView
+    DriverEarningsView,
+    DriverFareRatesView,
 )
 
 urlpatterns = [
+    path("fare-rates/", DriverFareRatesView.as_view(), name="driver-fare-rates"),
     path("profile/", DriverProfileView.as_view(), name="driver-profile"),
     path("toggle-status/", DriverStatusToggleView.as_view(), name="driver-toggle-status"),
     path("kyc/", DriverKYCView.as_view(), name="driver-kyc"),

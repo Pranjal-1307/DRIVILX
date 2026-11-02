@@ -16,6 +16,7 @@ import {
     MapPin
 } from "lucide-react";
 import { driverService } from "../../services/driverService";
+import OSMMap from "../common/OSMMap";
 
 const DriverActiveTripModal = ({ isOpen, onClose, onTripStatusChanged }) => {
     const [trip, setTrip] = useState(null);
@@ -147,6 +148,7 @@ const DriverActiveTripModal = ({ isOpen, onClose, onTripStatusChanged }) => {
                         </div>
                     ) : (
                         <div className="space-y-6">
+                            <OSMMap pickup={trip.pickup_coords} destination={trip.dest_coords} geometry={trip.route_geometry} height={250} />
                             {/* Trip Progress Stepper */}
                             <div className="bg-gray-900/70 p-4 rounded-2xl border border-gray-800">
                                 <p className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">
@@ -243,6 +245,12 @@ const DriverActiveTripModal = ({ isOpen, onClose, onTripStatusChanged }) => {
                                         onChange={(e) => setOtpInput(e.target.value.replace(/\D/g, "").slice(0, 6))}
                                         className="w-full px-4 py-2.5 bg-gray-900 border border-yellow-400/50 rounded-xl text-yellow-400 font-mono text-center font-bold tracking-widest text-base focus:outline-none"
                                     />
+                                </div>
+                            )}
+
+                            {trip.status === "awaiting_advance_payment" && (
+                                <div className="rounded-xl border border-yellow-400/30 bg-yellow-400/10 p-3 text-sm text-yellow-200">
+                                    You accepted this request. Trip controls unlock after the passenger pays the advance.
                                 </div>
                             )}
 

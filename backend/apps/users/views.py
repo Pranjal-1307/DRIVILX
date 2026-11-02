@@ -6,6 +6,7 @@ from rest_framework import status
 
 from database.mongodb import users_collection
 from apps.authentication.services import decode_token
+from apps.bookings.maps import normalize_city
 
 
 def get_authenticated_user(request):
@@ -42,7 +43,8 @@ class UserProfileView(APIView):
                 "email": user.get("email", ""),
                 "phone": user.get("phone", ""),
                 "address": user.get("address", ""),
-                "city": user.get("city", "Mumbai"),
+                "city": user.get("city", ""),
+                "city_normalized": user.get("city_normalized", normalize_city(user.get("city", ""))),
                 "emergency_contact": user.get("emergency_contact", ""),
                 "preferred_car_type": user.get("preferred_car_type", "Manual"),
                 "avatar": user.get("avatar", ""),
@@ -61,6 +63,8 @@ class UserProfileView(APIView):
         for field in ["name", "phone", "address", "city", "emergency_contact", "preferred_car_type", "avatar"]:
             if field in data:
                 update_fields[field] = str(data[field]).strip()
+        if "city" in update_fields:
+            update_fields["city_normalized"] = normalize_city(update_fields["city"])
         
         update_fields["updated_at"] = datetime.utcnow()
         
@@ -79,7 +83,8 @@ class UserProfileView(APIView):
                 "email": updated_user.get("email", ""),
                 "phone": updated_user.get("phone", ""),
                 "address": updated_user.get("address", ""),
-                "city": updated_user.get("city", "Mumbai"),
+                "city": updated_user.get("city", ""),
+                "city_normalized": updated_user.get("city_normalized", normalize_city(updated_user.get("city", ""))),
                 "emergency_contact": updated_user.get("emergency_contact", ""),
                 "preferred_car_type": updated_user.get("preferred_car_type", "Manual"),
                 "avatar": updated_user.get("avatar", "")

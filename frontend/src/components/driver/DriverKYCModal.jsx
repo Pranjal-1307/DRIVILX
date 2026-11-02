@@ -14,6 +14,7 @@ import {
     Sparkles
 } from "lucide-react";
 import { driverService } from "../../services/driverService";
+import LocationSearch from "../common/LocationSearch";
 
 const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
     const [loading, setLoading] = useState(false);
@@ -25,7 +26,7 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
     const submissionLock = useRef(false);
 
     const [kycForm, setKycForm] = useState({
-        pan_number: "", aadhaar_number: "", license_number: "", license_expiry: "",
+        pan_number: "", aadhaar_number: "", license_number: "", license_expiry: "", city: "",
         status: "pending", documents: {}
     });
 
@@ -45,6 +46,7 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                     aadhaar_number: res.kyc.aadhaar_number || "",
                     license_number: res.kyc.license_number || "",
                     license_expiry: res.kyc.license_expiry || "",
+                    city: res.kyc.city || "",
                     status: res.status || "pending",
                     documents: res.kyc.documents || {}
                 });
@@ -79,7 +81,7 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
 
         try {
             const res = await driverService.submitKYC({
-                fields: Object.fromEntries(["pan_number", "aadhaar_number", "license_number", "license_expiry"].map(key => [key, kycForm[key]])),
+                fields: Object.fromEntries(["pan_number", "aadhaar_number", "license_number", "license_expiry", "city"].map(key => [key, kycForm[key]])),
                 files: selectedFiles
             });
             if (res.success) {
@@ -185,6 +187,7 @@ const DriverKYCModal = ({ isOpen, onClose, onKYCUpdated }) => {
                     <form onSubmit={handleSubmit} className="space-y-6">
                         {/* Identity Input fields */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="sm:col-span-2"><LocationSearch label="CITY OF RESIDENCE (INDIA)" value={kycForm.city ? {address: kycForm.city} : null} onSelect={place => setKycForm(prev => ({...prev, city: place?.city || place?.address?.split(",").slice(-2,-1)[0]?.trim() || ""}))} placeholder="Search your city and choose a result" /></div>
                             <div>
                                 <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">
                                     Driving License Number

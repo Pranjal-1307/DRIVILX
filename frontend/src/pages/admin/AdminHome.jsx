@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from "react";
 import Navbar from "../../components/navbar/Navbar";
+import OSMMap from "../../components/common/OSMMap";
 import { adminService } from "../../services/adminService";
 import {
     Users,
@@ -740,7 +741,7 @@ const AdminHome = () => {
                                                             {isVerified && <CheckCircle2 size={16} className="text-emerald-400" />}
                                                         </h3>
                                                         <p className="text-xs text-slate-400 flex items-center gap-1 mt-0.5">
-                                                            <MapPin size={12} className="text-amber-400" /> {driver.city || "Mumbai"}
+                                                            <MapPin size={12} className="text-amber-400" /> {driver.city || "City not set"}
                                                         </p>
                                                     </div>
                                                 </div>
@@ -893,7 +894,7 @@ const AdminHome = () => {
                                                         {user.phone || "Not provided"}
                                                     </td>
                                                     <td className="px-6 py-4 text-xs text-slate-300">
-                                                        {user.city || "Mumbai"}
+                                                        {user.city || "City not set"}
                                                     </td>
                                                     <td className="px-6 py-4 text-xs font-bold text-amber-400">
                                                         {user.total_bookings} Rides
@@ -1021,7 +1022,8 @@ const AdminHome = () => {
                                                     </td>
                                                     <td className="px-6 py-4 text-xs font-medium text-slate-300">
                                                         <p className="font-mono text-amber-400">{driver.license_number}</p>
-                                                        <p className="text-slate-400">{driver.city || "Mumbai"}</p>
+                                                        <p className="text-slate-400">{driver.city || "City not set"}</p>
+                                                        <p className="text-slate-500">Fares: {Object.entries(driver.fare_per_km || {}).map(([v,r]) => `${v} ₹${r}/km`).join(" · ") || "Not configured"}</p>
                                                     </td>
                                                     <td className="px-6 py-4 text-xs">
                                                         <div className="flex items-center gap-1 text-amber-400 font-bold">
@@ -1151,6 +1153,7 @@ const AdminHome = () => {
                                                 <span className="text-slate-400">Customer:</span>
                                                 <strong className="text-slate-200">{b.user_name} ({b.user_phone})</strong>
                                             </div>
+                                            {b.user_city && <div className="text-slate-400">Customer city: <strong className="text-slate-200">{b.user_city}</strong></div>}
                                             <div className="flex items-center gap-2">
                                                 <Car size={14} className="text-amber-400" />
                                                 <span className="text-slate-400">Driver:</span>
@@ -1160,6 +1163,8 @@ const AdminHome = () => {
                                                 <MapPin size={14} className="text-emerald-400 mt-0.5 shrink-0" />
                                                 <span className="text-slate-300 line-clamp-1">{b.pickup_address} → {b.dropoff_address}</span>
                                             </div>
+                                            {b.pickup_coords && <OSMMap pickup={b.pickup_coords} destination={b.dest_coords} geometry={b.route_geometry} height={150} />}
+                                            <div className="text-slate-400">Pickup city: <strong className="text-slate-200">{b.pickup_city || "Not recorded"}</strong> · {b.distance_km || 0} km · ₹{b.rate_per_km || "—"}/km · {b.vehicle_type || "Vehicle unavailable"}</div>
                                         </div>
 
                                         {b.declined_by_count > 0 && (
@@ -1382,7 +1387,7 @@ const AdminHome = () => {
                             </div>
                             <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
                                 <span className="text-slate-500">City / Operating Zone</span>
-                                <p className="text-slate-200 font-medium">{selectedDriverDetails.city || "Mumbai"}</p>
+                                <p className="text-slate-200 font-medium">{selectedDriverDetails.city || "City not set"}</p>
                             </div>
                             <div className="bg-slate-950 p-3 rounded-xl border border-slate-800">
                                 <span className="text-slate-500">Experience</span>

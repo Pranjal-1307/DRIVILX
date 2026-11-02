@@ -57,6 +57,9 @@ bookings_collection.create_index(
     "driver_id"
 )
 
+drivers_collection.create_index([("city_normalized", 1), ("status", 1), ("kyc_status", 1)])
+bookings_collection.create_index([("pickup_city_normalized", 1), ("status", 1)])
+
 notifications_collection.create_index(
     "user_id"
 )

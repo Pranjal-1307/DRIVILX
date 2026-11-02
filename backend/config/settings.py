@@ -162,7 +162,8 @@ REST_FRAMEWORK = {
 
         "rest_framework.permissions.AllowAny"
 
-    ]
+    ],
+    "DEFAULT_THROTTLE_RATES": {"location_search": "30/hour"}
 
 }
 

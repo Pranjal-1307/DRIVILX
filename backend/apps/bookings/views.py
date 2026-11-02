@@ -6,7 +6,8 @@ from rest_framework import status
 
 from database.mongodb import bookings_collection, drivers_collection, reviews_collection, notifications_collection
 from apps.users.views import get_authenticated_user
-from .services import calculate_estimated_fare, find_and_assign_driver, create_user_notification, generate_start_otp
+from .services import calculate_estimated_fare, find_and_assign_driver, create_user_notification, generate_start_otp, VEHICLE_MULTIPLIERS
+from .maps import MapServiceError, calculate_route, canonical_city_name, normalize_city, reverse_location, search_locations, validate_point
 
 
 def _booking_driver_for_user(booking):
@@ -23,32 +24,60 @@ def _owner_start_otp(booking):
     return None
 
 
+class LocationSearchView(APIView):
+    def get(self, request):
+        query = request.query_params.get("q", "")
+        try:
+            return Response({"results": search_locations(query) if len(query.strip()) >= 3 else []})
+        except MapServiceError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class ReverseLocationView(APIView):
+    def post(self, request):
+        try:
+            return Response({"success": True, "location": reverse_location(request.data.get("point"))})
+        except (ValueError, MapServiceError) as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class RouteView(APIView):
+    def post(self, request):
+        try:
+            return Response({"success": True, "route": calculate_route(request.data.get("origin"), request.data.get("destination"))})
+        except (ValueError, MapServiceError) as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class EstimateFareView(APIView):
     def post(self, request):
         data = request.data
-        pickup = data.get("pickup", "").strip()
-        destination = data.get("destination", "").strip()
+        try:
+            origin = validate_point(data.get("pickup_coords"), "pickup")
+            target = validate_point(data.get("dest_coords"), "destination")
+            pickup_place = reverse_location(origin)
+            target_place = reverse_location(target)
+            city = canonical_city_name(data.get("pickup_city") or pickup_place.get("city") or "")
+            if not city:
+                return Response({"error": "Pickup city could not be identified."}, status=status.HTTP_400_BAD_REQUEST)
+            route = calculate_route(origin, target)
+        except (ValueError, MapServiceError) as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        vehicle = data.get("vehicle_type", "Sedan")
         trip_type = data.get("trip_type", "city_ride")
-        vehicle_type = data.get("vehicle_type", "Sedan")
-        distance_km = float(data.get("distance_km", 0)) if data.get("distance_km") else None
-        duration_mins = int(data.get("duration_mins", 0)) if data.get("duration_mins") else None
-
-        if not pickup or not destination:
-            return Response(
-                {"error": "Pickup and destination are required."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        estimate = calculate_estimated_fare(
-            pickup=pickup,
-            destination=destination,
-            trip_type=trip_type,
-            vehicle_type=vehicle_type,
-            distance_km=distance_km,
-            duration_mins=duration_mins
-        )
-
-        return Response({"success": True, "estimate": estimate})
+        city_key = normalize_city(city)
+        offers = {}
+        for driver in drivers_collection.find({"kyc_status": "verified", "status": "available", "is_suspended": {"$ne": True}}):
+            driver_city = normalize_city(canonical_city_name(driver.get("city") or driver.get("city_normalized") or ""))
+            try: rate = float((driver.get("fare_per_km") or {}).get(vehicle))
+            except (TypeError, ValueError): continue
+            if driver_city != city_key or not rate: continue
+            offers.setdefault(rate, []).append(str(driver["_id"]))
+        quotes=[]
+        for rate, ids in sorted(offers.items()):
+            fare=calculate_estimated_fare(data.get("pickup", pickup_place.get("display_name", "")), data.get("destination", target_place.get("display_name", "")), trip_type, vehicle, route["distance_km"], route["duration_mins"], rate)
+            quotes.append({"rate_per_km": rate, "available_drivers_count": len(ids), "vehicle_type": vehicle, "fare": fare})
+        return Response({"success": True, "quotes": quotes, "pickup_city": city, "route": route})
 
 
 class CreateBookingView(APIView):
@@ -76,14 +105,24 @@ class CreateBookingView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        fare_calc = calculate_estimated_fare(
-            pickup=pickup,
-            destination=destination,
-            trip_type=trip_type,
-            vehicle_type=vehicle_type,
-            distance_km=float(data.get("distance_km", 0)) if data.get("distance_km") else None,
-            duration_mins=int(data.get("duration_mins", 0)) if data.get("duration_mins") else None
-        )
+        try:
+            origin = validate_point(data.get("pickup_coords"), "pickup")
+            target = validate_point(data.get("dest_coords"), "destination")
+            city = canonical_city_name(data.get("pickup_city") or reverse_location(origin).get("city") or "")
+            route = calculate_route(origin, target)
+            rate = float(data.get("rate_per_km"))
+            eligible_ids = []
+            for driver in drivers_collection.find({"kyc_status": "verified", "is_suspended": {"$ne": True}}):
+                try: driver_rate = float((driver.get("fare_per_km") or {}).get(vehicle_type))
+                except (TypeError, ValueError): continue
+                if driver_rate == rate and normalize_city(canonical_city_name(driver.get("city") or driver.get("city_normalized") or "")) == normalize_city(city):
+                    eligible_ids.append(str(driver["_id"]))
+            if not eligible_ids:
+                return Response({"error": "No verified drivers match this city and fare. Refresh fare offers."}, status=status.HTTP_409_CONFLICT)
+            fare_calc = calculate_estimated_fare(pickup, destination, trip_type, vehicle_type, route["distance_km"], route["duration_mins"], rate)
+        except (TypeError, ValueError, MapServiceError) as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
 
         booking_doc = {
             "user_id": str(user["_id"]),
@@ -91,8 +130,14 @@ class CreateBookingView(APIView):
             "user_phone": user.get("phone", ""),
             "pickup": pickup,
             "destination": destination,
-            "pickup_coords": {"lat": pickup_lat, "lng": pickup_lng} if pickup_lat else None,
-            "dest_coords": {"lat": dest_lat, "lng": dest_lng} if dest_lat else None,
+            "pickup_coords": origin,
+            "dest_coords": target,
+            "pickup_city": city,
+            "pickup_city_normalized": normalize_city(city),
+            "destination_city": reverse_location(target).get("city"),
+            "route_geometry": route["route_geometry"],
+            "pricing_driver_ids": eligible_ids,
+            "rate_per_km": rate,
             "booking_date": booking_date,
             "booking_time": booking_time,
             "trip_type": trip_type,
@@ -100,7 +145,7 @@ class CreateBookingView(APIView):
             "vehicle_type": vehicle_type,
             "notes": notes,
             "fare": fare_calc,
-            "status": "pending_advance",  # pending_advance, driver_assigned, on_the_way, arrived, in_progress, completed, cancelled
+            "status": "searching",  # pending_advance, driver_assigned, on_the_way, arrived, in_progress, completed, cancelled
             "advance_paid": False,
             "remaining_paid": False,
             "driver": None,
@@ -116,10 +161,10 @@ class CreateBookingView(APIView):
 
         return Response({
             "success": True,
-            "message": "Booking request created. Please pay the advance booking amount to confirm.",
+            "message": "Booking request sent. Pay the advance after a driver accepts.",
             "booking_id": booking_id,
             "fare": fare_calc,
-            "status": "pending_advance"
+            "status": "searching"
         }, status=status.HTTP_201_CREATED)
 
 
@@ -212,39 +257,21 @@ class PayAdvanceView(APIView):
             if booking.get("advance_paid"):
                 return Response({"error": "Advance already paid for this booking."}, status=status.HTTP_400_BAD_REQUEST)
 
-            # Advance paid: transition to searching state for verified drivers to accept
-            bookings_collection.update_one(
-                {"_id": ObjectId(booking_id)},
-                {
-                    "$set": {
-                        "advance_paid": True,
-                        "advance_payment_id": payment_txn_id,
-                        "advance_payment_method": payment_method,
-                        "advance_paid_at": datetime.utcnow(),
-                        "status": "searching",
-                        "driver": None,
-                        "updated_at": datetime.utcnow()
-                    }
-                }
+            if booking.get("status") != "awaiting_advance_payment" or not (booking.get("driver") or {}).get("driver_id"):
+                return Response({"error": "A driver must accept this request before advance payment."}, status=status.HTTP_409_CONFLICT)
+            result = bookings_collection.update_one(
+                {"_id": ObjectId(booking_id), "user_id": str(user["_id"]), "status": "awaiting_advance_payment", "advance_paid": False},
+                {"$set": {"advance_paid": True, "advance_payment_id": payment_txn_id, "advance_payment_method": payment_method,
+                          "advance_paid_at": datetime.utcnow(), "status": "driver_assigned", "updated_at": datetime.utcnow()},
+                 "$unset": {"advance_payment_deadline": ""}}
             )
-
-            # Generate notification
-            create_user_notification(
-                user_id=user["_id"],
-                title="Advance Payment Confirmed! 💳",
-                message="Advance payment received. Your ride request has been broadcasted to verified chauffeurs.",
-                notification_type="payment_success",
-                booking_id=booking_id
-            )
-
-            return Response({
-                "success": True,
-                "message": "Advance payment successful! Finding a verified chauffeur for your ride...",
-                "booking_id": booking_id,
-                "status": "searching",
-                "payment_id": payment_txn_id,
-                "driver": None
-            })
+            if result.matched_count != 1:
+                return Response({"error": "This booking is no longer waiting for advance payment."}, status=status.HTTP_409_CONFLICT)
+            create_user_notification(user_id=user["_id"], title="Advance Payment Confirmed",
+                message="Advance received. Your accepted driver is confirmed and your trip is ready.",
+                notification_type="payment_success", booking_id=booking_id)
+            return Response({"success": True, "message": "Advance payment successful. Your driver is confirmed.",
+                "booking_id": booking_id, "status": "driver_assigned", "payment_id": payment_txn_id, "driver": booking.get("driver")})
 
         except Exception as e:
             return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
@@ -317,7 +344,7 @@ class UpdateTripStatusView(APIView):
                 return Response({"error": "Booking not found"}, status=status.HTTP_404_NOT_FOUND)
 
             result = bookings_collection.update_one(
-                {"_id": ObjectId(booking_id), "user_id": str(user["_id"]), "status": {"$in": ["pending_advance", "searching", "driver_assigned", "on_the_way", "arrived"]}},
+                {"_id": ObjectId(booking_id), "user_id": str(user["_id"]), "status": {"$in": ["pending_advance", "searching", "awaiting_advance_payment", "driver_assigned", "on_the_way", "arrived"]}},
                 {"$set": {"status": new_status, "updated_at": datetime.utcnow()}}
             )
             if result.matched_count != 1:

@@ -1,4 +1,5 @@
-import React from "react";
+import React, { useState } from "react";
+import { bookingService } from "../../services/bookingService";
 import {
     Car,
     Phone,
@@ -14,6 +15,7 @@ import {
     Radio,
     Radar
 } from "lucide-react";
+import OSMMap from "../common/OSMMap";
 
 const STATUS_PROGRESS = [
     { key: "driver_assigned", label: "Driver Assigned", desc: "Matched with top chauffeur" },
@@ -26,7 +28,9 @@ const STATUS_PROGRESS = [
 const ActiveTripCard = ({
     booking,
     onPayRemainingClick,
-    onReviewClick
+    onReviewClick,
+    onAdvancePaid,
+    onCancelled
 }) => {
 
     if (!booking) return null;
@@ -34,6 +38,27 @@ const ActiveTripCard = ({
     const currentStatus = booking.status || "searching";
     const driver = booking.driver;
     const fare = booking.fare || {};
+    const [paymentMethod, setPaymentMethod] = useState("UPI / GPay / PhonePe");
+    const [paying, setPaying] = useState(false);
+    const [paymentError, setPaymentError] = useState("");
+    const [cancelling, setCancelling] = useState(false);
+    const [cancelError, setCancelError] = useState("");
+    const cancelRide = async () => {
+        if (!window.confirm("Cancel this ride request?")) return;
+        setCancelling(true); setCancelError("");
+        try { await bookingService.cancelBooking(booking.id); onCancelled?.(); }
+        catch (e) { setCancelError(e.response?.data?.error || "Ride could not be cancelled."); }
+        finally { setCancelling(false); }
+    };
+    const cancelButton = ["pending_advance", "searching", "awaiting_advance_payment", "driver_assigned", "on_the_way", "arrived"].includes(currentStatus)
+        ? <div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" onClick={cancelRide} disabled={cancelling} className="rounded-xl border border-red-500/40 px-4 py-2 text-xs font-bold text-red-300 hover:bg-red-500/10 disabled:opacity-60">{cancelling ? "Cancelling…" : "Cancel ride"}</button>{cancelError && <span role="alert" className="text-xs text-red-300">{cancelError}</span>}</div>
+        : null;
+    const payAdvance = async () => {
+        setPaying(true); setPaymentError("");
+        try { const result = await bookingService.payAdvance(booking.id, { payment_method: paymentMethod, payment_id: `PAY_ADV_${Date.now()}` }); if (result.success) onAdvancePaid?.(); }
+        catch (e) { setPaymentError(e.response?.data?.error || "Advance payment could not be completed."); }
+        finally { setPaying(false); }
+    };
 
     // -------------------------------------------------------------
     // STATE 1: SEARCHING / PENDING DRIVER (No driver assigned yet)
@@ -41,6 +66,7 @@ const ActiveTripCard = ({
     if (!driver || currentStatus === "searching" || currentStatus === "pending_advance") {
         return (
             <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-[#131620] via-[#0f1118] to-[#090a0f] border border-yellow-500/30 shadow-2xl p-6 md:p-8 text-white mb-8 animate-fadeIn">
+                {cancelButton}
                 {/* Background ambient glow */}
                 <div className="absolute -top-24 -right-24 w-72 h-72 bg-yellow-400/10 rounded-full blur-3xl pointer-events-none" />
                 <div className="absolute -bottom-24 -left-24 w-72 h-72 bg-emerald-400/10 rounded-full blur-3xl pointer-events-none" />
@@ -53,7 +79,7 @@ const ActiveTripCard = ({
                             <span className="relative inline-flex rounded-full h-3 w-3 bg-yellow-400"></span>
                         </span>
                         <span className="text-xs md:text-sm font-black text-yellow-400 flex items-center gap-1.5 tracking-wider uppercase">
-                            <Sparkles size={16} /> BROADCASTING TO VERIFIED DRIVERS
+                            <Sparkles size={16} /> MATCHING VERIFIED DRIVER IN {booking.pickup_city || "PICKUP CITY"}
                         </span>
                     </div>
                     <span className="text-xs px-3 py-1 bg-yellow-400 text-black font-extrabold rounded-lg uppercase tracking-wider shadow">
@@ -82,7 +108,7 @@ const ActiveTripCard = ({
 
                         <div className="w-full pt-3 border-t border-zinc-800 flex items-center justify-center gap-2 text-xs text-emerald-400 font-semibold">
                             <ShieldCheck size={16} />
-                            <span>100% Admin KYC Verified Only</span>
+                            <span>Verified driver in {booking.pickup_city || "your pickup city"} only</span>
                         </div>
                     </div>
 
@@ -109,6 +135,8 @@ const ActiveTripCard = ({
                             </div>
                         </div>
 
+                        {booking.pickup_coords && <OSMMap pickup={booking.pickup_coords} destination={booking.dest_coords} geometry={booking.route_geometry} height={220} />}
+
                         {/* Payment & Status Note */}
                         <div className="p-4 bg-zinc-900/60 border border-zinc-800 rounded-2xl flex items-center justify-between text-xs">
                             <div className="flex items-center gap-2">
@@ -116,8 +144,8 @@ const ActiveTripCard = ({
                                     <CheckCircle2 size={16} />
                                 </div>
                                 <div>
-                                    <p className="font-bold text-white">Advance Booking Paid</p>
-                                    <p className="text-zinc-400 text-[11px]">₹{fare.advance_amount || 0} Confirmed</p>
+                                    <p className="font-bold text-white">Advance Payment</p>
+                                    <p className="text-zinc-400 text-[11px]">Pay after a driver accepts</p>
                                 </div>
                             </div>
                             <div className="text-right">
@@ -129,7 +157,7 @@ const ActiveTripCard = ({
                         <div className="p-3.5 bg-yellow-400/5 border border-yellow-400/20 rounded-xl text-xs text-yellow-300 flex items-start gap-2.5">
                             <Clock size={16} className="text-yellow-400 shrink-0 mt-0.5" />
                             <span>
-                                Driver details (Photo, Name, Phone, Rating & Vehicle info) will become visible here the moment an Admin-verified driver accepts your request.
+                                Your request is with matching verified drivers. We will ask you to pay the advance after one accepts.
                             </span>
                         </div>
                     </div>
@@ -143,6 +171,15 @@ const ActiveTripCard = ({
     // -------------------------------------------------------------
     return (
         <div className="relative overflow-hidden rounded-3xl bg-gradient-to-b from-[#141722] via-[#0f1118] to-[#090a0f] border border-yellow-400/40 shadow-2xl p-6 md:p-8 text-white mb-8 animate-fadeIn">
+            {cancelButton}
+            {currentStatus === "awaiting_advance_payment" && (
+                <div className="mb-5 rounded-2xl border border-yellow-400/40 bg-yellow-400/10 p-4 space-y-3">
+                    <p className="font-bold text-yellow-300">{driver.name} accepted your ride. Pay ₹{fare.advance_amount || 0} advance to confirm.</p>
+                    <div className="flex flex-wrap gap-2">{["UPI / GPay / PhonePe", "Credit / Debit Card", "Net Banking"].map(method => <button key={method} onClick={() => setPaymentMethod(method)} className={`rounded-lg border px-3 py-2 text-xs ${paymentMethod === method ? "border-yellow-400 text-yellow-200" : "border-zinc-700 text-zinc-300"}`}>{method}</button>)}
+                    <button onClick={payAdvance} disabled={paying} className="rounded-lg bg-emerald-400 px-4 py-2 text-xs font-bold text-black disabled:opacity-60">{paying ? "Processing…" : "Pay advance"}</button></div>
+                    {paymentError && <p className="text-sm text-red-300">{paymentError}</p>}
+                </div>
+            )}
             {/* Top Driver Assigned Notification Alert Banner */}
             <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-emerald-500/10 border border-emerald-500/30 rounded-2xl mb-6">
                 <div className="flex items-center gap-2.5">

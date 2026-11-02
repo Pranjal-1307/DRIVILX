@@ -1,5 +1,6 @@
 from django.urls import path
 from .views import (
+    LocationSearchView, ReverseLocationView, RouteView,
     EstimateFareView,
     CreateBookingView,
     MyBookingsView,
@@ -12,6 +13,9 @@ from .views import (
 )
 
 urlpatterns = [
+    path("locations/search/", LocationSearchView.as_view(), name="location-search"),
+    path("locations/reverse/", ReverseLocationView.as_view(), name="location-reverse"),
+    path("route/", RouteView.as_view(), name="booking-route"),
     path("estimate/", EstimateFareView.as_view(), name="booking-estimate"),
     path("create/", CreateBookingView.as_view(), name="booking-create"),
     path("my-bookings/", MyBookingsView.as_view(), name="my-bookings"),

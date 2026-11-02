@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 import uuid
 from pathlib import Path
@@ -13,6 +13,9 @@ from rest_framework import status
 from database.mongodb import drivers_collection, bookings_collection, reviews_collection, notifications_collection
 from apps.authentication.services import decode_token
 from apps.bookings.services import create_user_notification, generate_start_otp, is_usable_start_otp
+from apps.bookings.maps import canonical_city_name, normalize_city
+
+FARE_VEHICLES = ("Hatchback", "Sedan", "SUV", "Luxury")
 
 
 KYC_DOCUMENT_TYPES = {"license_front", "license_back", "aadhaar_card", "address_proof", "driver_photo"}
@@ -94,6 +97,33 @@ def get_authenticated_driver(request):
         return None, f"Database lookup error: {str(e)}"
 
 
+class DriverFareRatesView(APIView):
+    def get(self, request):
+        driver, error = get_authenticated_driver(request)
+        if error:
+            return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+        return Response({"fare_per_km": driver.get("fare_per_km", {})})
+
+    def put(self, request):
+        driver, error = get_authenticated_driver(request)
+        if error:
+            return Response({"error": error}, status=status.HTTP_401_UNAUTHORIZED)
+        rates = request.data.get("fare_per_km")
+        if not isinstance(rates, dict) or set(rates) != set(FARE_VEHICLES):
+            return Response({"error": "Provide a rate for Hatchback, Sedan, SUV, and Luxury."}, status=status.HTTP_400_BAD_REQUEST)
+        clean = {}
+        try:
+            for vehicle in FARE_VEHICLES:
+                value = float(rates[vehicle])
+                if not 1 <= value <= 500:
+                    raise ValueError
+                clean[vehicle] = round(value, 2)
+        except (TypeError, ValueError):
+            return Response({"error": "Each fare must be a valid amount from ₹1 to ₹500 per km."}, status=status.HTTP_400_BAD_REQUEST)
+        drivers_collection.update_one({"_id": driver["_id"]}, {"$set": {"fare_per_km": clean, "updated_at": datetime.utcnow()}})
+        return Response({"success": True, "fare_per_km": clean})
+
+
 class DriverProfileView(APIView):
     def get(self, request):
         driver, error = get_authenticated_driver(request)
@@ -138,8 +168,10 @@ class DriverProfileView(APIView):
                 "name": driver.get("name", ""),
                 "email": driver.get("email", ""),
                 "phone": driver.get("phone", "+91 98765 43210"),
-                "city": driver.get("city", "Mumbai"),
-                "address": driver.get("address", "Bandra West, Mumbai"),
+                "city": driver.get("city", ""),
+                "city_normalized": driver.get("city_normalized", normalize_city(driver.get("city", ""))),
+                "fare_per_km": driver.get("fare_per_km", {}),
+                "address": driver.get("address", ""),
                 "status": driver.get("status", "available"), # available, busy, offline
                 "experience_years": driver.get("experience_years", 5),
                 "car_experience": driver.get("car_experience", ["Manual", "Automatic", "Sedan", "SUV"]),
@@ -165,6 +197,8 @@ class DriverProfileView(APIView):
         for field in ["name", "phone", "city", "address", "experience_years", "car_experience", "bio", "avatar", "emergency_contact", "license_number"]:
             if field in data:
                 update_fields[field] = data[field]
+        if update_fields.get("city"):
+            update_fields["city_normalized"] = normalize_city(update_fields["city"])
 
         update_fields["updated_at"] = datetime.utcnow()
 
@@ -182,7 +216,9 @@ class DriverProfileView(APIView):
                 "name": updated.get("name", ""),
                 "email": updated.get("email", ""),
                 "phone": updated.get("phone", ""),
-                "city": updated.get("city", "Mumbai"),
+                "city": updated.get("city", ""),
+                "city_normalized": updated.get("city_normalized", normalize_city(updated.get("city", ""))),
+                "fare_per_km": updated.get("fare_per_km", {}),
                 "address": updated.get("address", ""),
                 "status": updated.get("status", "available"),
                 "experience_years": updated.get("experience_years", 5),
@@ -233,6 +269,7 @@ class DriverKYCView(APIView):
         current_kyc_status = driver.get("kyc_status", "pending")
         kyc_data = serialize_kyc(driver.get("kyc", {}))
         kyc_data.setdefault("license_number", driver.get("license_number", ""))
+        kyc_data.setdefault("city", driver.get("city", ""))
         kyc_data.setdefault("documents", {})
 
         return Response({
@@ -250,7 +287,12 @@ class DriverKYCView(APIView):
         old_kyc = driver.get("kyc", {}) or {}
         now = datetime.utcnow()
         fields = ("aadhaar_number", "pan_number", "license_number", "license_expiry")
+        city = str(data.get("city", old_kyc.get("city", driver.get("city", "")))).strip()
+        if not city:
+            return Response({"error": "City of residence is required."}, status=status.HTTP_400_BAD_REQUEST)
         kyc_record = dict(old_kyc)
+        kyc_record["city"] = city
+        kyc_record["city_normalized"] = normalize_city(city)
         kyc_record.setdefault("license_number", driver.get("license_number", ""))
         for field in fields:
             if field in data:
@@ -297,6 +339,8 @@ class DriverKYCView(APIView):
                 }
 
             changes = []
+            if city != old_kyc.get("city", driver.get("city", "")):
+                changes.append({"entity": "field", "key": "city", "change": "added" if not driver.get("city") else "changed", "before": driver.get("city"), "after": city})
             for field in fields:
                 old_value = old_kyc.get(field, driver.get("license_number", "") if field == "license_number" else None)
                 new_value = kyc_record.get(field)
@@ -325,7 +369,7 @@ class DriverKYCView(APIView):
             kyc_record["updated_at"] = now
             kyc_record["submission_id"] = submission_id
             history_entry = {"submission_id": submission_id, "actor": "driver", "actor_id": str(driver["_id"]), "timestamp": now, "changes": changes}
-            update = {"kyc": kyc_record, "kyc_status": "under_review", "updated_at": now,
+            update = {"kyc": kyc_record, "city": city, "city_normalized": normalize_city(city), "kyc_status": "under_review", "updated_at": now,
                       "kyc_history": [*(driver.get("kyc_history") or []), history_entry]}
             if kyc_record.get("license_number"):
                 update["license_number"] = kyc_record["license_number"]
@@ -417,11 +461,18 @@ class DriverRequestsView(APIView):
                 "message": "KYC verification pending Admin approval. You will receive customer booking requests once your documents are approved by the Admin."
             })
 
-        city = request.query_params.get("city", driver.get("city", "")).strip()
+        if driver.get("status") != "available":
+            return Response({"success": True, "requests": [], "kyc_approved": True, "kyc_status": kyc_status, "message": "Set your driver status to available to receive requests."})
+
+        city = normalize_city(canonical_city_name(driver.get("city") or driver.get("city_normalized", "")))
+        if city and driver.get("city_normalized") != city:
+            drivers_collection.update_one({"_id": driver["_id"]}, {"$set": {"city_normalized": city}})
 
         # Find bookings where driver hasn't been assigned or is in searching state
         query = {
-            "status": {"$in": ["searching", "pending_advance", "pending"]},
+            "status": "searching",
+            "pricing_driver_ids": str(driver["_id"]),
+            "pickup_city_normalized": city,
             "$or": [
                 {"driver": None},
                 {"driver": {"$exists": False}}
@@ -437,14 +488,17 @@ class DriverRequestsView(APIView):
         requests_list = []
 
         for b in cursor:
-            # Check city match if specified
             pickup_loc = b.get("pickup", "")
             dest_loc = b.get("destination", "")
-            
-            # Simple city matching if requested
-            is_matching_city = True
-            if city and city.lower() != "all":
-                is_matching_city = city.lower() in pickup_loc.lower() or city.lower() in dest_loc.lower()
+            is_matching_city = normalize_city(b.get("pickup_city", "")) == city
+            if not is_matching_city or b.get("vehicle_type") not in FARE_VEHICLES:
+                continue
+            try:
+                current_rate = float((driver.get("fare_per_km") or {}).get(b.get("vehicle_type")))
+            except (TypeError, ValueError):
+                continue
+            if current_rate != float(b.get("rate_per_km", -1)):
+                continue
 
             fare_info = b.get("fare", {})
             total_fare = fare_info.get("total_fare", 450)
@@ -460,9 +514,10 @@ class DriverRequestsView(APIView):
                 "vehicle_type": b.get("vehicle_type", "Sedan"),
                 "user_name": b.get("user_name", "Customer"),
                 "user_phone": b.get("user_phone", "+91 98765 00000"),
-                "distance_km": fare_info.get("distance_km", 12),
-                "duration_mins": fare_info.get("duration_mins", 30),
+                "distance_km": fare_info.get("distance_km", 0),
+                "duration_mins": fare_info.get("duration_mins", 0),
                 "estimated_fare": total_fare,
+                "rate_per_km": b.get("rate_per_km", fare_info.get("rate_per_km")),
                 "driver_earning": driver_earning,
                 "status": b.get("status"),
                 "advance_paid": b.get("advance_paid", False),
@@ -476,7 +531,7 @@ class DriverRequestsView(APIView):
             "requests": requests_list,
             "kyc_approved": True,
             "kyc_status": "verified",
-            "driver_city": driver.get("city", "Mumbai")
+            "driver_city": driver.get("city", "")
         })
 
 
@@ -509,7 +564,20 @@ class DriverRequestActionView(APIView):
             if not booking:
                 return Response({"error": "Booking not found"}, status=status.HTTP_404_NOT_FOUND)
 
+            if str(driver["_id"]) not in (booking.get("pricing_driver_ids") or [booking.get("pricing_driver_id", "")]):
+                return Response({"error": "This request is not assigned to your city and fare quote."}, status=status.HTTP_403_FORBIDDEN)
+            if normalize_city(booking.get("pickup_city", "")) != normalize_city(canonical_city_name(driver.get("city") or driver.get("city_normalized", ""))):
+                return Response({"error": "Your registered city does not match this pickup city."}, status=status.HTTP_403_FORBIDDEN)
+
             if action == "accept":
+                if driver.get("status") != "available":
+                    return Response({"error": "Set your status to available before accepting a ride."}, status=status.HTTP_409_CONFLICT)
+                try:
+                    current_rate = float((driver.get("fare_per_km") or {}).get(booking.get("vehicle_type")))
+                except (TypeError, ValueError):
+                    current_rate = 0
+                if current_rate != float(booking.get("rate_per_km", 0)):
+                    return Response({"error": "Your current fare differs from this quote. The user must request a refreshed fare."}, status=status.HTTP_409_CONFLICT)
                 driver_obj = {
                     "driver_id": str(driver["_id"]),
                     "name": driver.get("name", "Professional Driver"),
@@ -525,11 +593,11 @@ class DriverRequestActionView(APIView):
                 }
 
                 result = bookings_collection.update_one(
-                    {"_id": ObjectId(booking_id), "status": {"$in": ["searching", "pending_advance", "pending"]}, "$or": [{"driver": None}, {"driver": {"$exists": False}}]},
+                    {"_id": ObjectId(booking_id), "status": "searching", "advance_paid": False, "pricing_driver_ids": str(driver["_id"]), "$or": [{"driver": None}, {"driver": {"$exists": False}}]},
                     {
                         "$set": {
                             "driver": driver_obj,
-                            "status": "driver_assigned",
+                            "status": "awaiting_advance_payment",
                             "updated_at": datetime.utcnow()
                         }
                     }
@@ -547,24 +615,24 @@ class DriverRequestActionView(APIView):
                 if booking.get("user_id"):
                     create_user_notification(
                         user_id=booking["user_id"],
-                        title="Driver Confirmed Your Ride! 🚖",
-                        message=f"Chauffeur {driver.get('name', 'Driver')} (KYC Verified) has accepted your booking and will arrive in ~8 mins.",
+                        title="Driver Accepted — Advance Payment Required",
+                        message=f"{driver.get('name', 'Your driver')} accepted. Pay the advance to confirm the trip.",
                         notification_type="driver_assigned",
                         booking_id=booking_id
                     )
 
                 return Response({
                     "success": True,
-                    "message": "Booking accepted! You are now assigned to this trip.",
+                    "message": "Request accepted. Waiting for the passenger to pay the advance.",
                     "booking_id": booking_id,
-                    "status": "driver_assigned",
+                    "status": "awaiting_advance_payment",
                     "driver": driver_obj
                 })
 
             elif action == "decline":
                 # Retain the pending booking for other drivers while recording this driver's decline on it.
                 decline_result = bookings_collection.update_one(
-                    {"_id": ObjectId(booking_id), "status": {"$in": ["searching", "pending_advance", "pending"]}, "declined_by": {"$ne": str(driver["_id"])}},
+                    {"_id": ObjectId(booking_id), "status": "searching", "pricing_driver_ids": str(driver["_id"]), "declined_by": {"$ne": str(driver["_id"])}},
                     {"$addToSet": {"declined_by": str(driver["_id"])}, "$set": {"last_declined_at": datetime.utcnow(), "updated_at": datetime.utcnow()}}
                 )
                 if decline_result.matched_count != 1:
@@ -602,7 +670,7 @@ class DriverActiveTripView(APIView):
                 {"driver.driver_id": driver_id_str},
                 {"driver_id": driver_id_str}
             ],
-            "status": {"$in": ["driver_assigned", "on_the_way", "arrived", "in_progress"]}
+            "status": {"$in": ["awaiting_advance_payment", "driver_assigned", "on_the_way", "arrived", "in_progress"]}
         })
 
         if not active_booking:
@@ -641,6 +709,7 @@ class DriverActiveTripView(APIView):
                 "advance_paid": active_booking.get("advance_paid", False),
                 "remaining_paid": active_booking.get("remaining_paid", False),
                 "notes": active_booking.get("notes", "")
+                ,"route_geometry": active_booking.get("route_geometry")
             }
         })
 
@@ -667,9 +736,11 @@ class DriverActiveTripView(APIView):
             driver_id = str(driver["_id"])
             if str((booking.get("driver") or {}).get("driver_id", booking.get("driver_id", ""))) != driver_id:
                 return Response({"error": "This booking is not assigned to you."}, status=status.HTTP_403_FORBIDDEN)
+            if not booking.get("advance_paid") and new_status != "cancelled":
+                return Response({"error": "The customer must pay the advance before trip progress can start."}, status=status.HTTP_409_CONFLICT)
 
             current_status = booking.get("status")
-            transitions = {"driver_assigned": "on_the_way", "on_the_way": "arrived", "in_progress": "completed"}
+            transitions = {"awaiting_advance_payment": "on_the_way", "driver_assigned": "on_the_way", "on_the_way": "arrived", "in_progress": "completed"}
             if new_status == "in_progress":
                 if not otp:
                     return Response({"error": "Enter the six-digit OTP provided by the passenger."}, status=status.HTTP_400_BAD_REQUEST)

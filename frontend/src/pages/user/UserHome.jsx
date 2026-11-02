@@ -78,7 +78,7 @@ const UserHome = () => {
 
                 // Find currently active trip (if any)
                 const active = list.find((b) =>
-                    ["pending_advance", "searching", "driver_assigned", "on_the_way", "arrived", "in_progress"].includes(b.status) ||
+                    ["pending_advance", "searching", "awaiting_advance_payment", "driver_assigned", "on_the_way", "arrived", "in_progress"].includes(b.status) ||
                     (b.status === "completed" && (!b.remaining_paid || !b.review))
                 );
                 setActiveTrip(active || null);
@@ -87,7 +87,7 @@ const UserHome = () => {
                 const completed = list.filter((b) => b.status === "completed");
                 const spent = completed.reduce((acc, curr) => acc + (curr.fare?.total_fare || 0), 0);
                 const activeCount = list.filter((b) =>
-                    ["searching", "driver_assigned", "on_the_way", "arrived", "in_progress"].includes(b.status)
+                    ["searching", "awaiting_advance_payment", "driver_assigned", "on_the_way", "arrived", "in_progress"].includes(b.status)
                 ).length;
 
                 setStats({
@@ -121,11 +121,7 @@ const UserHome = () => {
 
     // Handle new booking completed
     const handleBookingSuccess = ({ bookingId, driver, fare }) => {
-        if (driver && driver.name) {
-            triggerToast(`🎉 Booking confirmed! ${driver.name} has been assigned.`);
-        } else {
-            triggerToast(`🎉 Advance payment confirmed! Searching for nearby verified drivers...`);
-        }
+        triggerToast("Ride request sent. You can pay the advance after a driver accepts.");
         fetchDashboardData();
         fetchNotificationsCount();
     };
@@ -185,6 +181,8 @@ const UserHome = () => {
                         booking={activeTrip}
                         onPayRemainingClick={(b) => setPayRemainingBooking(b)}
                         onReviewClick={(b) => setReviewBooking(b)}
+                        onAdvancePaid={() => { triggerToast("Advance paid. Your driver is confirmed."); fetchDashboardData(); }}
+                        onCancelled={() => { triggerToast("Ride cancelled."); fetchDashboardData(); }}
                     />
                 )}
 
