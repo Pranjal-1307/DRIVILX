@@ -1199,6 +1199,7 @@ const AdminHome = () => {
                             <div>
                                 <h2 className="text-lg font-bold text-white">KYC review · {kycReviewDriver.name}</h2>
                                 <p className="text-xs text-slate-400 mt-1">Status: <span className="text-amber-300 uppercase">{kycReviewData?.driver?.kyc_status || kycReviewDriver.kyc_status}</span></p>
+                                <p className="text-xs text-slate-400 mt-1">Registered mobile: <span className="text-slate-200">{kycReviewData?.driver?.phone || kycReviewDriver.phone || "Not provided"}</span></p>
                             </div>
                             <button onClick={() => { setKycReviewDriver(null); setKycReviewData(null); }} className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300" aria-label="Close KYC review"><X size={18} /></button>
                         </div>

@@ -267,7 +267,7 @@ class AdminUsersListView(APIView):
                 "id": u_id,
                 "name": u.get("name", "Unnamed User"),
                 "email": u.get("email", ""),
-                "phone": u.get("phone", "N/A"),
+                "phone": u.get("phone") or "N/A",
                 "city": u.get("city", ""),
                 "address": u.get("address", ""),
                 "emergency_contact": u.get("emergency_contact", ""),
@@ -391,7 +391,7 @@ class AdminDriversListView(APIView):
                 "id": d_id,
                 "name": d.get("name", "Unnamed Driver"),
                 "email": d.get("email", ""),
-                "phone": d.get("phone", "N/A"),
+                "phone": d.get("phone") or "N/A",
                 "city": d.get("city", ""),
                 "fare_per_km": d.get("fare_per_km", {}),
                 "vehicle_type": d.get("vehicle_type", d.get("car_type", "")),
@@ -495,7 +495,7 @@ class AdminDriverKYCView(APIView):
             value["storage_reference"] = raw.get("storage_key") if isinstance(raw, dict) and raw.get("storage_key") else None
         return Response({
             "success": True,
-            "driver": {"id": str(driver["_id"]), "name": driver.get("name", ""), "kyc_status": driver.get("kyc_status", "pending"),
+            "driver": {"id": str(driver["_id"]), "name": driver.get("name", ""), "phone": driver.get("phone", ""), "kyc_status": driver.get("kyc_status", "pending"),
                        "rejection_reason": driver.get("rejection_reason", "")},
             "kyc": {"aadhaar_number": _mask_kyc_number("aadhaar_number", kyc.get("aadhaar_number")),
                     "pan_number": _mask_kyc_number("pan_number", kyc.get("pan_number")),
@@ -665,15 +665,18 @@ class AdminBookingsListView(APIView):
         for booking in cursor:
             booking_id = str(booking["_id"])
             booking_user = users_collection.find_one({"_id": ObjectId(booking["user_id"])}) if ObjectId.is_valid(str(booking.get("user_id", ""))) else None
+            booking_driver = booking.get("driver") or {}
+            driver_id = str(booking_driver.get("driver_id", booking.get("driver_id", "")))
+            booking_driver_record = drivers_collection.find_one({"_id": ObjectId(driver_id)}, {"phone": 1}) if ObjectId.is_valid(driver_id) else None
             created_at = booking.get("created_at")
             bookings.append({
                 "id": booking_id,
                 "booking_id": booking.get("booking_id", f"DRV-{booking_id[-6:].upper()}"),
                 "user_name": booking.get("user_name") or booking.get("user", {}).get("name", "Customer"),
                 "user_city": (booking_user or {}).get("city", ""),
-                "user_phone": booking.get("user_phone") or booking.get("user", {}).get("phone", "N/A"),
+                "user_phone": booking.get("user_phone") or (booking_user or {}).get("phone") or "N/A",
                 "driver_name": booking.get("driver_name") or (booking.get("driver") or {}).get("name", "Unassigned"),
-                "driver_phone": booking.get("driver_phone") or (booking.get("driver") or {}).get("phone", "N/A"),
+                "driver_phone": (booking_driver_record or {}).get("phone") or booking.get("driver_phone") or booking_driver.get("phone") or "N/A",
                 "pickup_address": booking.get("pickup", {}).get("address") if isinstance(booking.get("pickup"), dict) else booking.get("pickup", booking.get("pickup_address", "N/A")),
                 "dropoff_address": booking.get("destination", {}).get("address") if isinstance(booking.get("destination"), dict) else booking.get("destination", booking.get("dropoff_address", "N/A")),
                 "package_type": booking.get("trip_type_name") or booking.get("package_type", "Standard"),

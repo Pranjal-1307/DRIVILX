@@ -13,6 +13,12 @@ from .maps import MapServiceError, calculate_route, canonical_city_name, normali
 def _booking_driver_for_user(booking):
     driver = dict(booking.get("driver") or {})
     driver.pop("start_otp", None)
+    driver_id = str(driver.get("driver_id", ""))
+    if ObjectId.is_valid(driver_id):
+        current_driver = drivers_collection.find_one({"_id": ObjectId(driver_id)}, {"phone": 1})
+        if current_driver:
+            driver["phone"] = current_driver.get("phone", "")
+    driver.setdefault("phone", "")
     return driver or None
 
 
@@ -127,6 +133,7 @@ class CreateBookingView(APIView):
         booking_doc = {
             "user_id": str(user["_id"]),
             "user_name": user.get("name", "Customer"),
+            # Booking-time contact snapshot lets the assigned driver coordinate this pickup.
             "user_phone": user.get("phone", ""),
             "pickup": pickup,
             "destination": destination,

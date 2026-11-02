@@ -83,22 +83,15 @@ def seed_default_admin():
             bcrypt.gensalt()
         ).decode("utf-8")
 
-        # Remove any existing user/driver with this admin email to prevent conflicts
-        users_collection.delete_many({"email": admin_email})
-        drivers_collection.delete_many({"email": admin_email})
-
         # Upsert admin record in admins collection
         admins_collection.update_one(
             {"email": admin_email},
             {
-                "$set": {
+                "$setOnInsert": {
                     "name": "Admin",
                     "email": admin_email,
                     "password": hashed_password,
                     "role": "admin",
-                    "updated_at": datetime.utcnow()
-                },
-                "$setOnInsert": {
                     "created_at": datetime.utcnow()
                 }
             },
@@ -113,14 +106,10 @@ def seed_verified_drivers():
     Seed a pool of verified professional drivers for booking assignment.
     """
     try:
-        # Keep only one driver in the collection
-        drivers_collection.delete_many({"email": {"$ne": "rajesh.driver@drivilx.com"}})
-
         sample_drivers = [
             {
                 "name": "Rajesh Kumar",
                 "email": "rajesh.driver@drivilx.com",
-                "phone": "+91 98765 43210",
                 "role": "driver",
                 "experience_years": 8,
                 "rating": 4.9,
@@ -138,12 +127,9 @@ def seed_verified_drivers():
             drivers_collection.update_one(
                 {"email": d["email"]},
                 {
-                    "$set": {
-                        **d,
-                        "password": pw_hash,
-                        "updated_at": datetime.utcnow()
-                    },
                     "$setOnInsert": {
+                        **{key: value for key, value in d.items() if key != "phone"},
+                        "password": pw_hash,
                         "created_at": datetime.utcnow()
                     }
                 },
@@ -173,14 +159,11 @@ def seed_default_user():
         users_collection.update_one(
             {"email": user_email},
             {
-                "$set": {
+                "$setOnInsert": {
                     "name": "Sample User",
                     "email": user_email,
                     "password": hashed_password,
                     "role": "user",
-                    "updated_at": datetime.utcnow()
-                },
-                "$setOnInsert": {
                     "created_at": datetime.utcnow()
                 }
             },

@@ -198,13 +198,11 @@ const DriverActiveTripModal = ({ isOpen, onClose, onTripStatusChanged }) => {
                                     </div>
                                 </div>
 
-                                <a
-                                    href={`tel:${trip.user_phone}`}
-                                    className="px-3.5 py-2 rounded-xl bg-gray-800 hover:bg-yellow-400 hover:text-black text-gray-200 text-xs font-bold border border-gray-700 transition flex items-center gap-1.5"
-                                >
-                                    <PhoneCall size={14} />
-                                    Call Customer
-                                </a>
+                                {trip.user_phone ? (
+                                    <a href={`tel:${trip.user_phone}`} className="px-3.5 py-2 rounded-xl bg-gray-800 hover:bg-yellow-400 hover:text-black text-gray-200 text-xs font-bold border border-gray-700 transition flex items-center gap-1.5">
+                                        <PhoneCall size={14} /> Call Customer
+                                    </a>
+                                ) : <span className="text-xs text-gray-400">Customer phone not provided</span>}
                             </div>
 
                             {/* Route Details */}

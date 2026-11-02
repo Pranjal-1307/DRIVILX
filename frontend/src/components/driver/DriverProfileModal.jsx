@@ -17,6 +17,7 @@ import {
 import { driverService } from "../../services/driverService";
 import { useAuth } from "../../context/AuthContext";
 import LocationSearch from "../common/LocationSearch";
+import { normalizePhone } from "../../utils/phone";
 
 const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
     const { user, login } = useAuth();
@@ -24,6 +25,7 @@ const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
     const [saving, setSaving] = useState(false);
     const [successMsg, setSuccessMsg] = useState("");
     const [errorMsg, setErrorMsg] = useState("");
+    const [originalPhone, setOriginalPhone] = useState("");
 
     const carOptions = ["Manual", "Automatic", "Sedan", "SUV", "Luxury Sedan", "Electric"];
 
@@ -52,6 +54,7 @@ const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
             const res = await driverService.getProfile();
             if (res.success && res.profile) {
                 const p = res.profile;
+                setOriginalPhone(p.phone || "");
                 setFormData({
                     name: p.name || user?.name || "",
                     email: p.email || user?.email || "",
@@ -91,13 +94,22 @@ const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
         setSuccessMsg("");
 
         try {
-            const res = await driverService.updateProfile(formData);
+            let phone = "";
+            if (formData.phone.trim()) {
+                try { phone = normalizePhone(formData.phone); }
+                catch (validationError) {
+                    if (formData.phone.trim() === originalPhone.trim()) phone = originalPhone;
+                    else throw validationError;
+                }
+            }
+            const res = await driverService.updateProfile({ ...formData, phone });
             if (res.success) {
                 setSuccessMsg("Driver profile updated successfully!");
+                setOriginalPhone(res.profile?.phone || phone);
                 // Update local storage user context
                 if (user) {
-                    const updatedUser = { ...user, name: formData.name, city: formData.city };
-                    login(localStorage.getItem("token"), updatedUser);
+                    const updatedUser = { ...user, name: formData.name, phone };
+                    login({ token: localStorage.getItem("drivilx_token"), user: updatedUser });
                 }
                 if (onProfileUpdated) onProfileUpdated(res.profile);
                 setTimeout(() => {
@@ -106,7 +118,7 @@ const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
                 }, 1200);
             }
         } catch (err) {
-            setErrorMsg(err.response?.data?.error || "Failed to update profile. Please try again.");
+            setErrorMsg(err.response?.data?.error || err.message || "Failed to update profile. Please try again.");
         } finally {
             setSaving(false);
         }
@@ -184,8 +196,8 @@ const DriverProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
                                     Phone Number
                                 </label>
                                 <input
-                                    type="text"
-                                    required
+                                    type="tel"
+                                    autoComplete="tel"
                                     value={formData.phone}
                                     onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
                                     placeholder="+91 98765 43210"

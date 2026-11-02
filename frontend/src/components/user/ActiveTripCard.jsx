@@ -235,12 +235,11 @@ const ActiveTripCard = ({
                     </div>
 
                     <div className="flex gap-2 pt-2">
-                        <a
-                            href={`tel:${driver.phone}`}
-                            className="flex-1 py-2.5 bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-yellow-400/20 transition"
-                        >
-                            <Phone size={14} className="text-black" /> Call Driver ({driver.phone})
-                        </a>
+                        {driver.phone ? (
+                            <a href={`tel:${driver.phone}`} className="flex-1 py-2.5 bg-yellow-400 hover:bg-yellow-300 text-black font-extrabold rounded-xl text-xs flex items-center justify-center gap-2 shadow-lg shadow-yellow-400/20 transition">
+                                <Phone size={14} className="text-black" /> Call Driver ({driver.phone})
+                            </a>
+                        ) : <span className="text-xs text-zinc-400">Driver phone not provided</span>}
                     </div>
                 </div>
 

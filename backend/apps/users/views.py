@@ -6,6 +6,7 @@ from rest_framework import status
 
 from database.mongodb import users_collection
 from apps.authentication.services import decode_token
+from apps.authentication.phone import normalize_phone, phone_in_use
 from apps.bookings.maps import normalize_city
 
 
@@ -63,6 +64,23 @@ class UserProfileView(APIView):
         for field in ["name", "phone", "address", "city", "emergency_contact", "preferred_car_type", "avatar"]:
             if field in data:
                 update_fields[field] = str(data[field]).strip()
+        if "phone" in data:
+            if not update_fields["phone"]:
+                if user.get("phone"):
+                    return Response({"error": "A registered mobile number cannot be removed; enter a valid replacement."}, status=status.HTTP_400_BAD_REQUEST)
+                update_fields.pop("phone")
+            else:
+                try:
+                    update_fields["phone"] = normalize_phone(update_fields["phone"])
+                except ValueError as exc:
+                    # Keep legacy phone formats when unchanged so existing users can
+                    # still save unrelated profile fields; changed values validate strictly.
+                    if update_fields["phone"] == user.get("phone"):
+                        update_fields.pop("phone")
+                    else:
+                        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                if update_fields.get("phone") and phone_in_use(update_fields["phone"], exclude_id=user["_id"]):
+                    return Response({"error": "An account already uses this mobile number."}, status=status.HTTP_400_BAD_REQUEST)
         if "city" in update_fields:
             update_fields["city_normalized"] = normalize_city(update_fields["city"])
         

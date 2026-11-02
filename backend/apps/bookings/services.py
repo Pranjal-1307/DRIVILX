@@ -85,7 +85,7 @@ def find_and_assign_driver():
         return {
             "driver_id": str(driver["_id"]),
             "name": driver.get("name", "Verified Chauffeur"),
-            "phone": driver.get("phone", "+91 98765 43210"),
+            "phone": driver.get("phone", ""),
             "rating": driver.get("rating", 4.9),
             "experience_years": driver.get("experience_years", 6),
             "total_trips": driver.get("total_trips", 250),
@@ -95,19 +95,7 @@ def find_and_assign_driver():
             "eta_minutes": random.randint(5, 14)
         }
     
-    # Default fallback driver if collection is empty
-    return {
-        "driver_id": "drv_default_01",
-        "name": "Rajesh Kumar",
-        "phone": "+91 98765 43210",
-        "rating": 4.9,
-        "experience_years": 8,
-        "total_trips": 420,
-        "license_number": "DL-0420180039211",
-        "avatar": "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80",
-        "badge": "Top Rated Chauffeur",
-        "eta_minutes": 8
-    }
+    return None
 
 
 def create_user_notification(user_id, title, message, notification_type="driver_assigned", booking_id=None):

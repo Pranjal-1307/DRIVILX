@@ -19,6 +19,7 @@ import {
 import {
     signupUser
 } from "../../services/authService";
+import { composePhone, PHONE_COUNTRY_CODES } from "../../utils/phone";
 
 import {
     useAuth
@@ -35,6 +36,10 @@ const Signup = () => {
     const [form, setForm] = useState({
 
         name: "",
+
+        phone: "",
+
+        countryCode: "+91",
 
         email: "",
 
@@ -111,6 +116,14 @@ const Signup = () => {
 
         setError("");
 
+        let phone;
+        try {
+            phone = composePhone(form.countryCode, form.phone);
+        } catch (validationError) {
+            setError(validationError.message);
+            return;
+        }
+
         setLoading(true);
 
         try {
@@ -124,7 +137,9 @@ const Signup = () => {
 
                     form.password,
 
-                    form.role
+                    form.role,
+
+                    phone
 
                 );
 
@@ -441,6 +456,42 @@ const Signup = () => {
                                     className="drivix-input w-full px-4 py-4 rounded-2xl border border-gray-200 bg-gray-50 outline-none focus:bg-white focus:border-yellow-400 focus:ring-4 focus:ring-yellow-400/10"
                                 />
 
+                            </div>
+
+
+                            {/* Required mobile number */}
+
+                            <div>
+
+                                <label className="block text-sm font-bold text-gray-700 mb-2">
+                                    Mobile number
+                                </label>
+
+                                <div className="grid grid-cols-[minmax(145px,0.8fr)_1fr] gap-2">
+                                    <select
+                                        name="countryCode"
+                                        value={form.countryCode}
+                                        onChange={handleChange}
+                                        aria-label="Country calling code"
+                                        className="drivix-input min-w-0 px-3 py-4 rounded-2xl border border-gray-200 bg-gray-50 outline-none focus:bg-white focus:border-yellow-400 focus:ring-4 focus:ring-yellow-400/10"
+                                    >
+                                        {PHONE_COUNTRY_CODES.map(country => (
+                                            <option key={country.value} value={country.value}>{country.label}</option>
+                                        ))}
+                                    </select>
+                                    <input
+                                        type="tel"
+                                        name="phone"
+                                        value={form.phone}
+                                        onChange={event => setForm(prev => ({ ...prev, phone: event.target.value.replace(/[^0-9\\s().-]/g, "") }))}
+                                        placeholder="98765 43210"
+                                        autoComplete="tel-national"
+                                        inputMode="tel"
+                                        required
+                                        className="drivix-input min-w-0 w-full px-4 py-4 rounded-2xl border border-gray-200 bg-gray-50 outline-none focus:bg-white focus:border-yellow-400 focus:ring-4 focus:ring-yellow-400/10"
+                                    />
+                                </div>
+                                <p className="mt-1.5 text-xs text-gray-500">Required for customer and driver accounts. Saved in international format.</p>
                             </div>
 
 

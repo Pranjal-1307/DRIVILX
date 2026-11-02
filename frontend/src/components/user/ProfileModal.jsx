@@ -15,6 +15,7 @@ import {
 import { userService } from "../../services/userService";
 import { useAuth } from "../../context/AuthContext";
 import LocationSearch from "../common/LocationSearch";
+import { normalizePhone } from "../../utils/phone";
 
 const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
     const { user, login } = useAuth();
@@ -22,6 +23,7 @@ const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
     const [saving, setSaving] = useState(false);
     const [successMsg, setSuccessMsg] = useState("");
     const [errorMsg, setErrorMsg] = useState("");
+    const [originalPhone, setOriginalPhone] = useState("");
 
     const [formData, setFormData] = useState({
         name: "",
@@ -45,6 +47,7 @@ const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
         try {
             const res = await userService.getProfile();
             if (res.success && res.profile) {
+                setOriginalPhone(res.profile.phone || "");
                 setFormData({
                     name: res.profile.name || user?.name || "",
                     email: res.profile.email || user?.email || "",
@@ -76,9 +79,18 @@ const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
         setSuccessMsg("");
 
         try {
-            const res = await userService.updateProfile(formData);
+            let phone = "";
+            if (formData.phone.trim()) {
+                try { phone = normalizePhone(formData.phone); }
+                catch (validationError) {
+                    if (formData.phone.trim() === originalPhone.trim()) phone = originalPhone;
+                    else throw validationError;
+                }
+            }
+            const res = await userService.updateProfile({ ...formData, phone });
             if (res.success) {
                 setSuccessMsg("Profile updated successfully!");
+                setOriginalPhone(res.profile?.phone || phone);
                 // Update local storage and auth context if name updated
                 if (res.profile) {
                     login({
@@ -95,7 +107,7 @@ const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
                 setTimeout(() => setSuccessMsg(""), 3500);
             }
         } catch (err) {
-            setErrorMsg(err.response?.data?.error || "Failed to update profile. Please try again.");
+            setErrorMsg(err.response?.data?.error || err.message || "Failed to update profile. Please try again.");
         } finally {
             setSaving(false);
         }
@@ -180,6 +192,7 @@ const ProfileModal = ({ isOpen, onClose, onProfileUpdated }) => {
                                     </label>
                                     <input
                                         type="tel"
+                                        autoComplete="tel"
                                         placeholder="+91 98765 00000"
                                         value={formData.phone}
                                         onChange={(e) => setFormData({ ...formData, phone: e.target.value })}

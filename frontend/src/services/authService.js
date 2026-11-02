@@ -24,7 +24,8 @@ export const signupUser = async (
     name,
     email,
     password,
-    role
+    role,
+    phone
 ) => {
 
     const response = await api.post(
@@ -33,7 +34,8 @@ export const signupUser = async (
             name,
             email,
             password,
-            role
+            role,
+            phone
         }
     );
 

@@ -10,12 +10,27 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 
-from database.mongodb import drivers_collection, bookings_collection, reviews_collection, notifications_collection
+from database.mongodb import drivers_collection, bookings_collection, reviews_collection, notifications_collection, users_collection
 from apps.authentication.services import decode_token
+from apps.authentication.phone import normalize_phone, phone_in_use
 from apps.bookings.services import create_user_notification, generate_start_otp, is_usable_start_otp
 from apps.bookings.maps import canonical_city_name, normalize_city
 
 FARE_VEHICLES = ("Hatchback", "Sedan", "SUV", "Luxury")
+
+
+def _booking_user_phone(booking):
+    # Keep the booking-time snapshot for pickup coordination; older bookings
+    # fall back to the current user record.
+    phone = booking.get("user_phone")
+    if phone:
+        return phone
+    user_id = str(booking.get("user_id", ""))
+    if ObjectId.is_valid(user_id):
+        user = users_collection.find_one({"_id": ObjectId(user_id)}, {"phone": 1})
+        if user:
+            return user.get("phone", "")
+    return ""
 
 
 KYC_DOCUMENT_TYPES = {"license_front", "license_back", "aadhaar_card", "address_proof", "driver_photo"}
@@ -167,7 +182,7 @@ class DriverProfileView(APIView):
                 "id": driver_id_str,
                 "name": driver.get("name", ""),
                 "email": driver.get("email", ""),
-                "phone": driver.get("phone", "+91 98765 43210"),
+                "phone": driver.get("phone", ""),
                 "city": driver.get("city", ""),
                 "city_normalized": driver.get("city_normalized", normalize_city(driver.get("city", ""))),
                 "fare_per_km": driver.get("fare_per_km", {}),
@@ -181,7 +196,7 @@ class DriverProfileView(APIView):
                 "badge": driver.get("badge", "Verified Pro Driver"),
                 "avatar": driver.get("avatar", "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&auto=format&fit=crop&q=80"),
                 "bio": driver.get("bio", "Professional chauffeur with 5+ years of highway and city driving experience."),
-                "emergency_contact": driver.get("emergency_contact", "+91 91234 56789"),
+                "emergency_contact": driver.get("emergency_contact", ""),
                 "license_number": driver.get("license_number", "DL-0420180039211"),
                 "kyc_status": driver.get("kyc_status", "pending") # pending, under_review, verified, rejected
             }
@@ -197,6 +212,21 @@ class DriverProfileView(APIView):
         for field in ["name", "phone", "city", "address", "experience_years", "car_experience", "bio", "avatar", "emergency_contact", "license_number"]:
             if field in data:
                 update_fields[field] = data[field]
+        if "phone" in data:
+            if not str(data.get("phone", "")).strip():
+                if driver.get("phone"):
+                    return Response({"error": "A registered mobile number cannot be removed; enter a valid replacement."}, status=status.HTTP_400_BAD_REQUEST)
+                update_fields.pop("phone")
+            else:
+                try:
+                    update_fields["phone"] = normalize_phone(str(data["phone"]))
+                except ValueError as exc:
+                    if str(data["phone"]).strip() == str(driver.get("phone", "")).strip():
+                        update_fields.pop("phone")
+                    else:
+                        return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                if update_fields.get("phone") and phone_in_use(update_fields["phone"], exclude_id=driver["_id"]):
+                    return Response({"error": "An account already uses this mobile number."}, status=status.HTTP_400_BAD_REQUEST)
         if update_fields.get("city"):
             update_fields["city_normalized"] = normalize_city(update_fields["city"])
 
@@ -513,7 +543,6 @@ class DriverRequestsView(APIView):
                 "trip_type_name": b.get("trip_type_name", "City Ride"),
                 "vehicle_type": b.get("vehicle_type", "Sedan"),
                 "user_name": b.get("user_name", "Customer"),
-                "user_phone": b.get("user_phone", "+91 98765 00000"),
                 "distance_km": fare_info.get("distance_km", 0),
                 "duration_mins": fare_info.get("duration_mins", 0),
                 "estimated_fare": total_fare,
@@ -581,7 +610,7 @@ class DriverRequestActionView(APIView):
                 driver_obj = {
                     "driver_id": str(driver["_id"]),
                     "name": driver.get("name", "Professional Driver"),
-                    "phone": driver.get("phone", "+91 98765 43210"),
+                    # The live phone is looked up from the driver's account when returned to users/admins.
                     "rating": driver.get("rating", 4.9),
                     "total_trips": driver.get("total_trips", 50) + 1,
                     "license_number": driver.get("license_number", "DL-0420180039211"),
@@ -694,7 +723,7 @@ class DriverActiveTripView(APIView):
             "active_trip": {
                 "id": str(active_booking["_id"]),
                 "user_name": active_booking.get("user_name", "Customer"),
-                "user_phone": active_booking.get("user_phone", "+91 98765 43210"),
+                "user_phone": _booking_user_phone(active_booking),
                 "pickup": active_booking.get("pickup"),
                 "destination": active_booking.get("destination"),
                 "pickup_coords": active_booking.get("pickup_coords"),

@@ -6,6 +6,7 @@ from pymongo.errors import DuplicateKeyError
 
 from database.mongodb import users_collection, drivers_collection, admins_collection
 from .services import hash_password, verify_password, generate_token
+from .phone import normalize_phone, phone_in_use
 
 
 def get_target_collection(role):
@@ -23,12 +24,22 @@ class SignupView(APIView):
         email = data.get("email", "").strip().lower()
         password = data.get("password", "")
         role = data.get("role", "user").strip().lower()
+        try:
+            phone = normalize_phone(data.get("phone"))
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        if role not in {"user", "driver"}:
+            return Response({"error": "Choose a valid account type."}, status=status.HTTP_400_BAD_REQUEST)
 
         if not email or not password or not name:
             return Response(
                 {"error": "Name, email, and password are required fields."},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        if phone_in_use(phone):
+            return Response({"error": "An account already uses this mobile number."}, status=status.HTTP_400_BAD_REQUEST)
 
         # Check across collections for existing email
         if (
@@ -47,6 +58,7 @@ class SignupView(APIView):
         user_doc = {
             "name": name,
             "email": email,
+            "phone": phone,
             "password": hashed_password,
             "role": role,
             "created_at": datetime.utcnow()
@@ -75,6 +87,7 @@ class SignupView(APIView):
                         "id": user_id,
                         "name": name,
                         "email": email,
+                        "phone": phone,
                         "role": role
                     }
                 },
@@ -136,6 +149,7 @@ class LoginView(APIView):
                     "id": user_id,
                     "name": user.get("name", ""),
                     "email": user["email"],
+                    "phone": user.get("phone", ""),
                     "role": role
                 }
             },

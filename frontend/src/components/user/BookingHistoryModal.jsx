@@ -172,7 +172,7 @@ const BookingHistoryModal = ({
                                                             <ShieldCheck size={12} className="text-emerald-400" />
                                                         </div>
                                                         <div className="text-[10px] text-zinc-400 flex items-center gap-1">
-                                                            <Star size={10} className="text-yellow-400 fill-yellow-400" /> {b.driver.rating} • {b.driver.phone}
+                                                            <Star size={10} className="text-yellow-400 fill-yellow-400" /> {b.driver.rating} • {b.driver.phone || "Phone not provided"}
                                                         </div>
                                                     </div>
                                                 </div>
